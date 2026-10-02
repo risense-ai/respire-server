@@ -60,7 +60,7 @@ Copy `.env.example` to `.env`, supply a random database password and select a va
 
 Run the manual `Deployment artifact` workflow after CI succeeds for the exact server and website revisions. Download its image archive, Compose files, deployment script and checksums, then use an operator SSH session to deploy the verified artifact with `deploy/ssh-deploy.sh` to a prepared instance. Configure domains, certificate paths and environment directories for your installation. API and static web images deploy independently; `/admin/` JSON routes go to the API, while `/admin` and `/dashboard` serve the SPA.
 
-`deploy/backup-prod.sh` takes and verifies a PostgreSQL dump, retaining seven backups. Configure its paths for your installation. Preserve the PostgreSQL volume during image upgrades; `docker compose down -v` deletes it. Deployment is manual. Image publication requires an explicit `publish_image` selection and a `v<version>` tag matching `service/Cargo.toml`; ordinary pushes do not deploy or publish images.
+`deploy/backup-prod.sh` takes and verifies a PostgreSQL dump, retaining seven backups. Configure its paths for your installation. Preserve the PostgreSQL volume during image upgrades; `docker compose down -v` deletes it. Deployment is manual. After the exact revision passes CI and image smoke checks, a push to `main` publishes a unique `<version>-dev.<run-id>` image and updates the `dev` channel. A `v<version>` tag matching `service/Cargo.toml` publishes the stable version and updates `latest`. Both also publish an immutable source-SHA tag. Manual image validation does not publish unless `publish_image` is explicitly selected on a matching version tag.
 
 ## Build dependencies
 
