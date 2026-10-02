@@ -48,4 +48,5 @@ docker compose --project-name "${project}-web" --env-file "$directory/.env" --en
 curl -fsS --max-time 10 "http://127.0.0.1:$api_port/ready"
 curl -fsS --max-time 10 -o /dev/null "http://127.0.0.1:$web_port/"
 printf '%s\n' "$revision" > "$directory/current-revision"
+install -m 600 site-sha.txt "$directory/current-site-revision"
 printf '%s\n' "Respire $target ready on loopback ports $api_port/$web_port; proxy routing unchanged."

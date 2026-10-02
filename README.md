@@ -41,10 +41,10 @@ Build the browser console with `cd admin-ui && npm ci && npm test && npm run bui
 
 | Host | Surface | Production upstream |
 |---|---|---|
-| `https://rsrs.rs` | Website | Web image on `127.0.0.1:8089` |
+| `https://rsrs.rs` | Website | Web image on `127.0.0.1:18089` |
 | `https://dash.rsrs.rs` | User dashboard | Web console; same-origin user API proxy |
 | `https://admin.rsrs.rs` | Administrator console | Web console; existing administrator authorization |
-| `https://api.rsrs.rs` | HTTP API | Server on `127.0.0.1:8789` |
+| `https://api.rsrs.rs` | HTTP API | Server on `127.0.0.1:18789` |
 
 The dashboard hostname rejects `/admin` routes. Console API requests remain same-origin through nginx; API clients use `api.rsrs.rs`. Local development uses API port 8787 and web port 8087. Only an explicitly selected production deployment can synchronize the four-host nginx configuration. No DNS, certificate or deployment changes are made by editing these templates.
 
