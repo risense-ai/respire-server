@@ -1,0 +1,202 @@
+//! Authenticated user self-service: `/api/self*`.
+
+use crate::store::{mask_token, BlobRepo};
+
+use super::dto::{EmailIn, PasswordIn, SessionCreateIn, TotpIn, VaultIn};
+use super::json::{json, server_error};
+
+pub(super) fn route(
+    repo: &BlobRepo,
+    method: &str,
+    path: &str,
+    body: &str,
+    user: &str,
+    token: &str,
+) -> Option<(u16, String)> {
+    if method == "GET" && path == "/api/self/sessions" {
+        return Some(match repo.list_sessions(user, token) {
+            Ok(sessions) => json(200, serde_json::json!({"sessions": sessions})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" {
+        if let Some(id) = path.strip_prefix("/api/self/sessions/").and_then(|rest| rest.strip_suffix("/revoke")) {
+            return Some(match repo.revoke_session(user, id) {
+                Ok(revoked) => json(200, serde_json::json!({"revoked": revoked, "session_id": id})),
+                Err(e) => server_error(e),
+            });
+        }
+    }
+    if method == "GET" && path == "/api/self" {
+        return Some(match repo.user_created_at(user) {
+            Ok(Some(created_at)) => json(
+                200,
+                serde_json::json!({"user": user, "created_at": created_at, "token_masked": mask_token(token)}),
+            ),
+            Ok(None) => json(404, serde_json::json!({"error": "user gone"})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/rotate" {
+        return Some(match repo.rotate_token(user) {
+            Ok(Some(token)) => json(200, serde_json::json!({"token": token, "user": user})),
+            Ok(None) => json(404, serde_json::json!({"error": "user gone"})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/sessions" {
+        let (name, readonly) = match serde_json::from_str::<SessionCreateIn>(body) {
+            Ok(parsed) => (
+                parsed.device_name.unwrap_or_else(|| "web".to_owned()),
+                parsed.readonly,
+            ),
+            Err(_) if body.trim().is_empty() => ("web".to_owned(), false),
+            Err(_) => return Some(json(400, serde_json::json!({"error": "bad json"}))),
+        };
+        let name = name.trim();
+        if name.is_empty() || name.len() > 128 {
+            return Some(json(400, serde_json::json!({"error": "device_name must contain 1-128 bytes"})));
+        }
+        if readonly && repo.token_is_readonly(token).unwrap_or(false) {
+            return Some(json(403, serde_json::json!({"error": "readonly session cannot create sessions"})));
+        }
+        return Some(match repo.create_session_with(user, name, readonly) {
+            Ok((tok, id)) => json(
+                200,
+                serde_json::json!({"token": tok, "session_id": id, "device_name": name, "readonly": readonly}),
+            ),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/password" {
+        let Ok(parsed) = serde_json::from_str::<PasswordIn>(body) else {
+            return Some(json(400, serde_json::json!({"error": "bad json"})));
+        };
+        if parsed.pass_hash.trim().is_empty() || parsed.salt.trim().is_empty() {
+            return Some(json(400, serde_json::json!({"error": "pass_hash/salt required"})));
+        }
+        return Some(match repo.user_set_password(user, &parsed.pass_hash, &parsed.salt) {
+            Ok(true) => json(200, serde_json::json!({"updated": true})),
+            Ok(false) => json(404, serde_json::json!({"error": "user gone"})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "GET" && path == "/api/self/vault" {
+        return Some(match repo.get_vault(user) {
+            Ok(Some(v)) => json(200, v),
+            Ok(None) => json(404, serde_json::json!({"error": "no vault"})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/vault" {
+        let Ok(parsed) = serde_json::from_str::<VaultIn>(body) else {
+            return Some(json(400, serde_json::json!({"error": "bad json"})));
+        };
+        return Some(match repo.put_vault(
+            user,
+            parsed.kdf_salt.trim(),
+            parsed.wrapped_urk.trim(),
+            parsed.urk_nonce.trim(),
+            parsed.version,
+        ) {
+            Ok(()) => {
+                let _ = repo.audit(user, "vault_put", user, "");
+                json(200, serde_json::json!({"ok": true}))
+            }
+            Err(e) if e.is::<postgres::Error>() => server_error(e),
+            Err(e) => json(400, serde_json::json!({"error": e.to_string()})),
+        });
+    }
+    if method == "GET" && path == "/api/self/keys" {
+        return Some(match repo.user_keys(user, token) {
+            Ok(value) => json(200, value),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/email" {
+        let Ok(parsed) = serde_json::from_str::<EmailIn>(body) else {
+            return Some(json(400, serde_json::json!({"error": "bad json"})));
+        };
+        let email = parsed.email.trim();
+        if email.is_empty() || !email.contains('@') {
+            return Some(json(400, serde_json::json!({"error": "invalid email"})));
+        }
+        return Some(match repo.issue_email_code(user, email, "verify_email") {
+            Ok(code) => {
+                let _ = repo.mail_outbox(email, "respire verify email", &format!("code={code}"));
+                let _ = repo.audit(user, "email_code", user, email);
+                json(200, serde_json::json!({"sent": true}))
+            }
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/email/confirm" {
+        let Ok(parsed) = serde_json::from_str::<TotpIn>(body) else {
+            return Some(json(400, serde_json::json!({"error": "bad json"})));
+        };
+        return Some(match repo.confirm_email(user, &parsed.code) {
+            Ok(true) => json(200, serde_json::json!({"updated": true})),
+            Ok(false) => json(401, serde_json::json!({"error": "bad code"})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/totp/begin" {
+        return Some(match repo.totp_begin(user, "user_totp_setup") {
+            Ok(v) => json(200, v),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/totp/confirm" {
+        let Ok(parsed) = serde_json::from_str::<TotpIn>(body) else {
+            return Some(json(400, serde_json::json!({"error": "bad json"})));
+        };
+        return Some(match repo.totp_confirm("users", user, "user_totp_setup", &parsed.code) {
+            Ok(true) => {
+                let _ = repo.audit(user, "totp_on", user, "");
+                json(200, serde_json::json!({"totp": true}))
+            }
+            Ok(false) => json(401, serde_json::json!({"error": "bad totp"})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/totp/disable" {
+        let Ok(parsed) = serde_json::from_str::<TotpIn>(body) else {
+            return Some(json(400, serde_json::json!({"error": "bad json"})));
+        };
+        return Some(match repo.totp_disable("users", user, &parsed.code) {
+            Ok(true) => {
+                let _ = repo.audit(user, "totp_off", user, "");
+                json(200, serde_json::json!({"totp": false}))
+            }
+            Ok(false) => json(401, serde_json::json!({"error": "bad totp"})),
+            Err(e) => server_error(e),
+        });
+    }
+    if method == "POST" && path == "/api/self/purge" {
+        let confirm = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v.get("confirm").and_then(|c| c.as_str()).map(str::to_owned))
+            .unwrap_or_default();
+        if confirm.trim() != user {
+            return Some(json(
+                400,
+                serde_json::json!({
+                    "error": "purge requires confirm: body.confirm must equal the username",
+                    "confirm_required": user,
+                }),
+            ));
+        }
+        return Some(match repo.revoke_user(user) {
+            Ok((true, blobs)) => {
+                let _ = repo.audit(user, "user_purge", user, "self");
+                json(
+                    200,
+                    serde_json::json!({"purged": true, "blobs_deleted": blobs, "user": user}),
+                )
+            }
+            Ok((false, _)) => json(404, serde_json::json!({"error": "user gone"})),
+            Err(e) => server_error(e),
+        });
+    }
+    None
+}

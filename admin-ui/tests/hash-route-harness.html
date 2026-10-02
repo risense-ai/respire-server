@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8" />
+<title>hash-route harness</title>
+<body>
+  <p id="hash"></p>
+  <div id="list">
+    <button type="button" data-id="mem-aaa">打开记忆 A</button>
+    <button type="button" data-id="mem-bbb">打开记忆 B</button>
+  </div>
+  <div id="detail" hidden>
+    <p id="current"></p>
+    <button type="button" id="back-inpage">返回记忆</button>
+  </div>
+  <script type="module">
+    import { parseRoute, routeHash } from '../src/hashRoute.js';
+    const pages = ['memories', 'diary'];
+    const opts = { admin: false, fallback: 'memories', pageIds: pages };
+    const hashEl = document.getElementById('hash');
+    const list = document.getElementById('list');
+    const detail = document.getElementById('detail');
+    const current = document.getElementById('current');
+    function render() {
+      const r = parseRoute(location.hash, opts);
+      hashEl.textContent = location.hash || '(empty)';
+      if (r.memoryId) {
+        list.hidden = true;
+        detail.hidden = false;
+        current.textContent = r.memoryId;
+      } else {
+        list.hidden = false;
+        detail.hidden = true;
+        current.textContent = '';
+      }
+    }
+    document.querySelectorAll('#list button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        location.hash = routeHash('memories', btn.dataset.id);
+      });
+    });
+    document.getElementById('back-inpage').addEventListener('click', () => {
+      location.hash = routeHash('memories', null);
+    });
+    window.addEventListener('hashchange', render);
+    if (!location.hash) location.hash = '#/memories';
+    else render();
+  </script>
+</body>
+</html>
