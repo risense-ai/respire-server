@@ -62,21 +62,23 @@ async function receivedCode(purpose, requestedAt) {
   const waitSeconds = Number(process.env.RESPIRE_DEV_MAIL_WAIT_SECONDS || 120);
   assert.ok(Number.isFinite(waitSeconds) && waitSeconds >= 30 && waitSeconds <= 600);
   console.log('WAITING_FOR_MAIL ' + purpose);
-  let code;
-    for (let attempt = 0; attempt < Math.ceil(waitSeconds / 2); attempt++) {
-      let stdout;
-      try {
-        ({ stdout } = await readMail(mailReader[0], [...mailReader.slice(1), JSON.stringify({ recipient: email, requestedAt, purpose })], { timeout: 15000, maxBuffer: 4096 }));
-      } catch {
-        throw new Error('Development mailbox reader failed; credentials and message contents are not logged.');
-      }
-      let received;
-      try { received = JSON.parse(stdout); } catch { throw new Error('Development mailbox reader returned invalid JSON.'); }
-      if (typeof received.code === 'string' && /^\d{6}$/.test(received.code)) { code = received.code; break; }
-      await new Promise(resolve => setTimeout(resolve, 2000));
+  const deadline = performance.now() + waitSeconds * 1000;
+  while (performance.now() < deadline) {
+    let stdout;
+    const remaining = Math.max(1, Math.floor(deadline - performance.now()));
+    try {
+      ({ stdout } = await readMail(mailReader[0], [...mailReader.slice(1), JSON.stringify({ recipient: email, requestedAt, purpose })], { timeout: Math.min(15000, remaining), maxBuffer: 4096 }));
+    } catch {
+      if (performance.now() >= deadline) break;
+      throw new Error('Development mailbox reader failed; credentials and message contents are not logged.');
     }
-    assert.ok(code, 'Verification email was not received');
-  return code;
+    let received;
+    try { received = JSON.parse(stdout); } catch { throw new Error('Development mailbox reader returned invalid JSON.'); }
+    if (typeof received.code === 'string' && /^\d{6}$/.test(received.code)) return received.code;
+    const pause = Math.min(2000, deadline - performance.now());
+    if (pause > 0) await new Promise(resolve => setTimeout(resolve, pause));
+  }
+  throw new Error('Verification email was not received before the deadline');
 }
 
 async function screenshot(name) {
