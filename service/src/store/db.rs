@@ -1650,6 +1650,7 @@ mod tests {
         repo.register("hank", &h, &s).context("required")?;
         let initial = repo.issue_email_code("hank", "a@b.c", "verify_email").context("required")?;
         assert_eq!(repo.user_keys("hank", "token")?["email_verified"], false);
+        assert!(!repo.queue_email_code("hank", "a@b.c", "verify_email")?);
         let wrong = if initial == "000000" { "111111" } else { "000000" };
         for _ in 0..5 {
             assert!(!repo.confirm_email("hank", wrong).context("required")?);
