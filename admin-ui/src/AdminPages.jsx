@@ -188,7 +188,7 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
             {!shown.length && <Empty />}
           </div>
           <div className="table-footer">
-            <span>{t('totalUsers', { n: total })}</span>
+            <span>{t('totalUsers', { n: total, size: pageSize })}</span>
             <div>
               <button className="icon-button" aria-label={t('prevPage')} disabled={pn <= 1} onClick={() => loadUsers(pn - 1, query)}><CaretLeft size={19} /></button>
               <span>{pn} / {pages}</span>
