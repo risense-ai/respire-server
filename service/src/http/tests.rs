@@ -717,6 +717,12 @@ use respire::memory::crypto::{derive_auth_salt, derive_pass_hash};
 
         let (status, _) = handle(&repo, "POST", "/forgot", r#"{"user":"carol"}"#, None);
         assert_eq!(status, 200);
+        let (empty, _) = repo.list_outbox(1, 10)?;
+        assert!(empty.is_empty());
+        let verify = repo.issue_email_code("carol", "carol@example.com", "verify_email")?;
+        assert!(repo.confirm_email("carol", &verify)?);
+        let (status, _) = handle(&repo, "POST", "/forgot", r#"{"user":"carol"}"#, None);
+        assert_eq!(status, 200);
         let (status, reply) = handle(&repo, "GET", "/admin/outbox", "", Some(&owner_tok));
         assert_eq!(status, 200, "{reply}");
         let item = serde_json::from_str::<serde_json::Value>(&reply).context("required")?["items"][0].clone();

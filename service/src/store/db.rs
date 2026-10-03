@@ -573,8 +573,14 @@ impl BlobRepo {
         let mut client = self.lock();
         let mut tx = client.transaction()?;
         tx.query_one("SELECT pg_advisory_xact_lock(hashtextextended($1, 1869440359))", &[&audience])?;
-        if throttle && tx.query_opt("SELECT 1 FROM verify_codes WHERE audience=$1 AND purpose=$2
-            AND expires_at::timestamptz > NOW()+INTERVAL '9 minutes' LIMIT 1", &[&audience, &purpose])?.is_some() {
+        if throttle && purpose == "reset_password" && tx.query_opt(
+            r#"SELECT 1 FROM users WHERE "user"=$1 AND email=$2 AND email_verified=TRUE AND disabled=0 AND deleted=0"#,
+            &[&audience, &email],
+        )?.is_none() {
+            return Ok(None);
+        }
+        if throttle && tx.query_opt("SELECT 1 FROM mail_outbox WHERE to_addr=$1 AND subject=$2
+            AND at::timestamptz > NOW()-INTERVAL '60 seconds' LIMIT 1", &[&email, &subject])?.is_some() {
             return Ok(None);
         }
         let id = random_hex(16);
@@ -595,6 +601,7 @@ impl BlobRepo {
         Ok(Some(code))
     }
 
+    #[cfg(test)]
     pub(crate) fn check_email_code(&self, audience: &str, purpose: &str, code: &str) -> Result<bool> {
         let hash = format!("{:x}", Sha256::digest(code.trim().as_bytes()));
         let row = self.lock().query_opt(
@@ -736,6 +743,7 @@ impl BlobRepo {
             .map(|row| row.get(0)))
     }
 
+    #[cfg(test)]
     pub(crate) fn user_email(&self, user: &str) -> Result<Option<String>> {
         Ok(self
             .lock()
@@ -776,15 +784,50 @@ impl BlobRepo {
         Ok(true)
     }
 
+    pub(crate) fn recovery_email(&self, user: &str) -> Result<Option<String>> {
+        Ok(self.lock().query_opt(
+            r#"SELECT email FROM users WHERE "user"=$1 AND email_verified=TRUE AND email<>'' AND disabled=0 AND deleted=0"#,
+            &[&user],
+        )?.map(|row| row.get(0)))
+    }
+
     pub(crate) fn reset_password(&self, user: &str, code: &str, pass_hash: &str, salt: &str) -> Result<bool> {
-        if !self.check_email_code(user, "reset_password", code)? {
+        if pass_hash.trim().is_empty() || salt.trim().is_empty() {
             return Ok(false);
         }
-        let ok = self.user_set_password(user, pass_hash, salt)?;
-        if ok {
-            self.audit(user, "reset_password", user, "")?;
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        tx.query_one("SELECT pg_advisory_xact_lock(hashtextextended($1, 1869440359))", &[&user])?;
+        let row = tx.query_opt(
+            r#"SELECT v.id, v.code_hash, v.expires_at FROM verify_codes v JOIN users u ON u."user"=v.audience
+               WHERE v.audience=$1 AND v.purpose='reset_password' AND v.email=u.email
+               AND u.email_verified=TRUE AND u.disabled=0 AND u.deleted=0
+               ORDER BY v.expires_at DESC LIMIT 1 FOR UPDATE OF v,u"#,
+            &[&user],
+        )?;
+        let Some(row) = row else { return Ok(false); };
+        let id: String = row.get(0);
+        let stored: String = row.get(1);
+        let expiry: String = row.get(2);
+        if is_expired(&expiry) {
+            tx.execute("DELETE FROM verify_codes WHERE id=$1", &[&id])?;
+            tx.commit()?;
+            return Ok(false);
         }
-        Ok(ok)
+        let hash = format!("{:x}", Sha256::digest(code.trim().as_bytes()));
+        if stored != hash {
+            tx.execute("UPDATE verify_codes SET failed_attempts=failed_attempts+1 WHERE id=$1", &[&id])?;
+            tx.execute("DELETE FROM verify_codes WHERE id=$1 AND failed_attempts>=5", &[&id])?;
+            tx.commit()?;
+            return Ok(false);
+        }
+        let token = random_hex(32);
+        tx.execute(r#"UPDATE users SET pass_hash=$2, salt=$3, token=$4 WHERE "user"=$1"#, &[&user, &pass_hash, &salt, &token])?;
+        tx.execute(r#"DELETE FROM sessions WHERE "user"=$1"#, &[&user])?;
+        tx.execute("DELETE FROM verify_codes WHERE audience=$1 AND purpose IN ('reset_password','user_totp')", &[&user])?;
+        tx.execute("INSERT INTO audit_log (at, actor, action, target, detail) VALUES ($1,$2,'reset_password',$2,'')", &[&now_rfc(), &user])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     pub(crate) fn complete_user_totp(
@@ -1666,9 +1709,38 @@ mod tests {
         assert_eq!(repo.user_keys("hank", "token")?["email_verified"], false);
         assert!(!repo.confirm_email("hank", &code).context("required")?);
 
-        let reset = repo.issue_email_code("hank", "a@b.c", "reset_password").context("required")?;
+        assert!(repo.recovery_email("hank")?.is_none());
+        assert!(!repo.queue_email_code("hank", "new@b.c", "reset_password")?);
+        let blocked = repo.issue_email_code("hank", "new@b.c", "reset_password")?;
+        assert!(!repo.reset_password("hank", &blocked, &h, &s)?);
+        let verified = repo.issue_email_code("hank", "new@b.c", "verify_email")?;
+        assert!(repo.confirm_email("hank", &verified)?);
+        assert_eq!(repo.recovery_email("hank")?.as_deref(), Some("new@b.c"));
+        assert!(repo.recovery_email("missing")?.is_none());
+        repo.set_disabled("hank", true)?;
+        assert!(repo.recovery_email("hank")?.is_none());
+        repo.set_disabled("hank", false)?;
+        let expired = repo.issue_email_code("hank", "new@b.c", "reset_password")?;
+        repo.lock().execute("UPDATE verify_codes SET expires_at='2000-01-01T00:00:00Z' WHERE audience='hank' AND purpose='reset_password'", &[])?;
+        assert!(!repo.reset_password("hank", &expired, &h, &s)?);
+        let exhausted = repo.issue_email_code("hank", "new@b.c", "reset_password")?;
+        let wrong = if exhausted == "000000" { "111111" } else { "000000" };
+        for _ in 0..5 { assert!(!repo.reset_password("hank", wrong, &h, &s)?); }
+        assert!(!repo.reset_password("hank", &exhausted, &h, &s)?);
+        let legacy = repo.login("hank", &h)?.context("legacy token")?;
+        let session = repo.login_session("hank", &h, Some("test-device"))?.context("session")?;
+        let session_token = session["token"].as_str().context("session token")?;
+        let ticket = repo.issue_ticket("hank", "user_totp")?;
+        repo.put_vault("hank", "aabbccddeeff0011", "aa", "bb", 4)?;
+        let vault = repo.get_vault("hank")?;
+        let reset = repo.issue_email_code("hank", "new@b.c", "reset_password").context("required")?;
+        assert!(!repo.reset_password("hank", &reset, "", &s)?);
         let (s2, h2) = hash("hank", "new-pass")?;
         assert!(repo.reset_password("hank", &reset, &h2, &s2).context("required")?);
+        assert!(repo.try_user_from_token(&legacy)?.is_none());
+        assert!(repo.try_user_from_token(session_token)?.is_none());
+        assert!(repo.take_ticket(&ticket, "user_totp")?.is_none());
+        assert_eq!(repo.get_vault("hank")?, vault);
         assert!(repo.login("hank", &h).context("required")?.is_none());
         assert!(repo.login("hank", &h2).context("required")?.is_some());
         assert!(!repo.reset_password("hank", &reset, &h, &s).context("required")?);

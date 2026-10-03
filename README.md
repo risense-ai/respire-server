@@ -87,6 +87,13 @@ Binding marks an address as verified only after a valid code is confirmed. Admin
 changes clear that flag. Codes expire after ten minutes and are invalidated after five
 incorrect binding attempts; requests are limited to once per minute.
 
+Password recovery uses the verified address bound to the username. Unknown, unverified,
+disabled and deleted accounts receive the same acknowledgement without sending mail.
+Reset codes expire in ten minutes and allow five incorrect attempts. A successful
+reset atomically consumes the code, changes only the login credentials, and revokes
+existing sessions and pending login tickets. Memory ciphertext, vault keys and TOTP
+enrollment remain unchanged. Sign in again with the new password.
+
 The existing browser development smoke check now verifies actual mail receipt.
 Set `RESPIRE_DEV_MAIL_ADDRESS` to an isolated test mailbox and `RESPIRE_DEV_MAIL_READER`
 to a JSON command array (for example `["python3", "../scripts/read-dev-mail.py"]` when

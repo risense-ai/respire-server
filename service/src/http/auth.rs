@@ -58,7 +58,7 @@ pub(super) fn unauthenticated(
                 return Some(json(400, serde_json::json!({"error": "bad json"})));
             };
             let user = parsed.user.trim();
-            let email = match repo.user_email(user) {
+            let email = match repo.recovery_email(user) {
                 Ok(email) => email,
                 Err(e) => return Some(server_error(e)),
             };
@@ -77,6 +77,9 @@ pub(super) fn unauthenticated(
                 return Some(json(400, serde_json::json!({"error": "bad json"})));
             };
             let user = parsed.user.trim();
+            if user.is_empty() || parsed.pass_hash.trim().is_empty() || parsed.salt.trim().is_empty() {
+                return Some(json(400, serde_json::json!({"error": "user/pass_hash/salt required"})));
+            }
             Some(match repo.reset_password(user, &parsed.code, &parsed.pass_hash, &parsed.salt) {
                 Ok(true) => json(200, serde_json::json!({"updated": true})),
                 Ok(false) => json(401, serde_json::json!({"error": "bad code"})),

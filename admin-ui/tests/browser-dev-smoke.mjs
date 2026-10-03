@@ -58,6 +58,27 @@ async function call(path, { method = 'GET', token, body, expected = 200 } = {}) 
   assert.equal(response.status(), expected, 'Development API returned an unexpected status');
   return response.json();
 }
+async function receivedCode(purpose, requestedAt) {
+  const waitSeconds = Number(process.env.RESPIRE_DEV_MAIL_WAIT_SECONDS || 120);
+  assert.ok(Number.isFinite(waitSeconds) && waitSeconds >= 30 && waitSeconds <= 600);
+  console.log('WAITING_FOR_MAIL ' + purpose);
+  let code;
+    for (let attempt = 0; attempt < Math.ceil(waitSeconds / 2); attempt++) {
+      let stdout;
+      try {
+        ({ stdout } = await readMail(mailReader[0], [...mailReader.slice(1), JSON.stringify({ recipient: email, requestedAt, purpose })], { timeout: 15000, maxBuffer: 4096 }));
+      } catch {
+        throw new Error('Development mailbox reader failed; credentials and message contents are not logged.');
+      }
+      let received;
+      try { received = JSON.parse(stdout); } catch { throw new Error('Development mailbox reader returned invalid JSON.'); }
+      if (typeof received.code === 'string' && /^\d{6}$/.test(received.code)) { code = received.code; break; }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    assert.ok(code, 'Verification email was not received');
+  return code;
+}
+
 async function screenshot(name) {
   await page.screenshot({ path: resolve(output, `${name}.png`), fullPage: true, mask: [page.locator('input'), page.locator('textarea'), page.locator('code'), page.locator('pre'), page.locator('.demo-key'), page.locator('.setup-key'), page.locator('.verification-code'), page.locator('.secret-result')] });
 }
@@ -190,20 +211,7 @@ try {
     const fixture = mail.items?.find(m => m.to === email);
     assert.ok(fixture, 'Development verification mail row absent');
     assert.equal(fixture.body, undefined, 'Administrator API must not expose verification codes');
-    let code;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      let stdout;
-      try {
-        ({ stdout } = await readMail(mailReader[0], [...mailReader.slice(1), JSON.stringify({ recipient: email, requestedAt, purpose: 'verify_email' })], { timeout: 15000, maxBuffer: 4096 }));
-      } catch {
-        throw new Error('Development mailbox reader failed; credentials and message contents are not logged.');
-      }
-      let received;
-      try { received = JSON.parse(stdout); } catch { throw new Error('Development mailbox reader returned invalid JSON.'); }
-      if (typeof received.code === 'string' && /^\d{6}$/.test(received.code)) { code = received.code; break; }
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    assert.ok(code, 'Verification email was not received');
+    const code = await receivedCode('verify_email', requestedAt);
     await page.getByLabel(t('emailCode'), { exact: true }).fill(code);
     await responseFor('/api/self/email/confirm', () => page.getByRole('button', { name: t('verifyAndBind'), exact: true }).click());
     assert.equal((await call('/api/self/keys', { token: userToken })).email, email);
@@ -242,6 +250,34 @@ try {
     await page.locator('.console-main').waitFor();
     userToken = await page.evaluate(() => localStorage.getItem('onememory.userToken'));
     assert.ok(userToken);
+  });
+  await step('user-email-password-recovery', async () => {
+    const previousToken = userToken;
+    const vault = await call('/api/self/vault', { token: previousToken });
+    const recoveredPassword = randomBytes(20).toString('hex');
+    await page.locator('.sidebar-bottom').getByRole('button', { name: t('signOut'), exact: true }).click();
+    await page.getByRole('button', { name: t('forgotPassword'), exact: true }).click();
+    await page.getByLabel(t('username'), { exact: true }).fill(user);
+    const requestedAt = new Date().toISOString();
+    await responseFor('/forgot', () => page.getByRole('button', { name: t('sendCode'), exact: true }).click());
+    const code = await receivedCode('reset_password', requestedAt);
+    await page.getByLabel(t('emailCode'), { exact: true }).fill(code);
+    await page.getByLabel(t('newLoginPassword'), { exact: true }).fill(recoveredPassword);
+    await page.getByLabel(t('confirmLoginPassword'), { exact: true }).fill(recoveredPassword);
+    await responseFor('/reset', () => page.getByRole('button', { name: t('resetPassword'), exact: true }).click());
+    await call('/api/self', { token: previousToken, expected: 401 });
+    const previous = await authPayload(user, nextPassword);
+    await call('/login', { method: 'POST', body: previous, expected: 401 });
+    const recovered = await authPayload(user, recoveredPassword);
+    await call('/reset', { method: 'POST', body: { ...recovered, code }, expected: 401 });
+    await page.getByLabel(t('username'), { exact: true }).fill(user);
+    await page.getByLabel(t('loginPassword'), { exact: true }).fill(recoveredPassword);
+    await page.getByLabel(t('superOptional'), { exact: true }).fill(recovery);
+    await page.locator('.gate-form form').getByRole('button', { name: t('login'), exact: true }).click();
+    await page.locator('.console-main').waitFor();
+    userToken = await page.evaluate(() => localStorage.getItem('onememory.userToken'));
+    assert.deepEqual(await call('/api/self/vault', { token: userToken }), vault);
+    await screenshot('user-password-recovered');
   });
   await step('admin-fixture-owner-and-viewer-permissions', async () => {
     for (const [name, pass, role] of [[owner, ownerPassword, 'owner'], [viewer, viewerPassword, 'viewer']]) {
