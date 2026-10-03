@@ -114,7 +114,7 @@ export function Security({ admin, token, me, notify, onReload, open, onLogout })
               setEmailBusy(false);
             }
           }}>
-            <label className="field">{t('emailAddress')}<input type="email" required value={email} onChange={(e) => { setEmail(e.target.value); setEmailSent(false); setEmailCode(''); setError(''); }} /></label>
+            <label className="field">{t('emailAddress')}<input type="email" required disabled={emailBusy} value={email} onChange={(e) => { setEmail(e.target.value); setEmailSent(false); setEmailCode(''); setError(''); }} /></label>
             {emailSent && <label className="field">{t('emailCode')}<input required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={emailCode} onChange={(e) => setEmailCode(e.target.value)} /></label>}
             {error && <p className="form-error" role="alert">{error}</p>}
             <Button primary disabled={emailBusy}>{emailSent ? t('verifyAndBind') : t('sendCode')}</Button>

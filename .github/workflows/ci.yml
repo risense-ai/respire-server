@@ -105,7 +105,9 @@ jobs:
           tool: cargo-llvm-cov
       - name: cargo test
         run: cargo test --locked -p respire_service -- --test-threads=4
+      # SMTP delivery is a network adapter validated by the opt-in mailbox smoke.
+      # Keep the existing HTTP/store/TOTP coverage scope and threshold.
       - name: line coverage ≥ 90% (http/store/totp)
         run: |
           cargo llvm-cov --locked -p respire_service --fail-under-lines 90 \
-            --ignore-filename-regex '(bound\.rs|web\.rs|access\.rs|main\.rs|admin\.html)'
+            --ignore-filename-regex '(bound\.rs|web\.rs|access\.rs|main\.rs|mail\.rs|admin\.html)'

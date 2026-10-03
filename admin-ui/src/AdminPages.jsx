@@ -416,7 +416,7 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
           </div>
           {mail ? (
             <article className="mail-preview">
-              <Badge tone="purple">{mail.status}</Badge>
+              <Badge tone="purple">{t({ pending: 'mailPending', sent: 'mailSent', failed: 'mailFailed', expired: 'mailExpired', legacy: 'mailLegacy' }[mail.status] || 'mailUnknown')}</Badge>
               <h2>{mail.subject}</h2>
               <p className="dim">{t('sentTo', { to: mail.to })}<br />{mail.at}</p>
               <hr />
