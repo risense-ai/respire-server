@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use postgres::{Client, Transaction};
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 3;
+pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 4;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
@@ -38,6 +38,9 @@ fn migrate_in_transaction(tx: &mut Transaction<'_>) -> Result<()> {
     }
     if stored < 3 {
         tx.batch_execute(include_str!("resolution_schema.sql"))?;
+    }
+    if stored < 4 {
+        tx.batch_execute(include_str!("mail_schema.sql"))?;
     }
     seed_default_super_admin(tx)?;
     set_version(tx, CURRENT_SCHEMA_VERSION)?;

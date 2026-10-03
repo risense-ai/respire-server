@@ -32,6 +32,7 @@ export function Gate({ admin, onEnter, notify }) {
 
   async function submit(e) {
     e.preventDefault();
+    if (busy) return;
     setError('');
     if (admin) {
       setBusy(true);
@@ -123,6 +124,7 @@ export function Gate({ admin, onEnter, notify }) {
         notify(t('passwordReset'));
         setTab('login');
         setStep(1);
+        setPass(''); setConfirm(''); setCode(''); setTicket('');
       } catch (err) {
         fail(err);
       } finally {
@@ -178,7 +180,7 @@ export function Gate({ admin, onEnter, notify }) {
           {!admin && step === 1 && (
             <div className="tabs stretch">
               {[['login', t('login')], ['register', t('register')]].map(([id, label]) => (
-                <button key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setError(''); setTicket(''); }}>{label}</button>
+                <button key={id} disabled={busy} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setError(''); setTicket(''); }}>{label}</button>
               ))}
             </div>
           )}
@@ -203,7 +205,7 @@ export function Gate({ admin, onEnter, notify }) {
                   <label className="field">{t('adminToken')}<input required type="password" value={envToken} onChange={(e) => setEnvToken(e.target.value)} /></label>
                 ) : (
                   <>
-                    <label className="field">{t('username')}<input required value={user} onChange={(e) => setUser(e.target.value)} placeholder={admin ? 'admin' : t('usernamePh')} autoComplete="username" /></label>
+                    <label className="field">{t('username')}<input required disabled={busy || (tab === 'reset' && step === 2)} value={user} onChange={(e) => setUser(e.target.value)} placeholder={admin ? 'admin' : t('usernamePh')} autoComplete="username" /></label>
                     {(tab !== 'reset' || step === 2) && (
                       <label className="field">{tab === 'reset' && step === 2 ? t('newLoginPassword') : t('loginPassword')}
                         <input required type="password" minLength={tab === 'login' ? 1 : 8} value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" />
@@ -216,7 +218,7 @@ export function Gate({ admin, onEnter, notify }) {
                       <label className="field">{t('superOptional')}<input type="password" value={superpass} onChange={(e) => setSuper(e.target.value)} autoComplete="off" /></label>
                     ) : null}
                     {ticket ? <label className="field">{t('totpCode')}<input required value={code} onChange={(e) => setCode(e.target.value)} /></label> : null}
-                    {tab === 'reset' && step === 2 ? <label className="field">{t('emailCode')}<input value={code} required onChange={(e) => setCode(e.target.value)} /></label> : null}
+                    {tab === 'reset' && step === 2 ? <label className="field">{t('emailCode')}<input value={code} required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} onChange={(e) => setCode(e.target.value)} /></label> : null}
                   </>
                 )}
               </>
@@ -225,11 +227,20 @@ export function Gate({ admin, onEnter, notify }) {
             <Button primary type="submit" className="full" icon={ArrowRight} disabled={busy || (tab === 'register' && step === 3 && !saved)}>
               {tab === 'register' ? (step === 3 ? t('enterMemory') : step === 2 ? t('generateSuper') : t('continue')) : tab === 'reset' ? (step === 1 ? t('sendCode') : t('resetPassword')) : ticket ? t('verify') : t('login')}
             </Button>
+            {tab === 'reset' && step === 2 && <Button type="button" disabled={busy} onClick={async () => {
+              setBusy(true); setError('');
+              try {
+                await api('/forgot', { method: 'POST', body: { user } });
+                setCode(''); notify(t('resetQueued'));
+              } catch (err) { fail(err); }
+              finally { setBusy(false); }
+            }}>{t('resendCode')}</Button>}
+            {tab === 'reset' && <Note>{t('resetNotDecrypt')}</Note>}
           </form>
           {admin ? (
             <button className="gate-link" onClick={() => setTokenMode(!tokenMode)}>{tokenMode ? t('usePasswordLogin') : t('useAdminToken')}</button>
           ) : (
-            <button className="gate-link" onClick={() => { setTab(tab === 'reset' ? 'login' : 'reset'); setStep(1); setError(''); setTicket(''); }}>
+            <button className="gate-link" disabled={busy} onClick={() => { setPass(''); setConfirm(''); setCode(''); setTab(tab === 'reset' ? 'login' : 'reset'); setStep(1); setError(''); setTicket(''); }}>
               {tab === 'reset' ? t('backToLogin') : t('forgotPassword')}
             </button>
           )}

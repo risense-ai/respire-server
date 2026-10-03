@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createHmac, randomBytes } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import { authPayload, decryptItem, deriveDataKey, unwrapUrk } from '../src/crypto.js';
 import { t } from '../src/i18n.js';
@@ -11,6 +13,12 @@ const adminToken = process.env.RESPIRE_DEV_ADMIN_TOKEN;
 const expectedSha = process.env.RESPIRE_DEV_SERVER_SHA;
 const consoleSha = process.env.RESPIRE_DEV_CONSOLE_SHA;
 const siteSha = process.env.RESPIRE_DEV_SITE_SHA;
+const mailAddress = process.env.RESPIRE_DEV_MAIL_ADDRESS;
+const mailReader = JSON.parse(process.env.RESPIRE_DEV_MAIL_READER || '[]');
+if (!mailAddress || !Array.isArray(mailReader) || !mailReader.length || !mailReader.every(value => typeof value === 'string' && value.length)) {
+  throw new Error('A development recipient and JSON command array for the mailbox reader are required.');
+}
+const readMail = promisify(execFile);
 if (origin !== 'https://dev.rsrs.rs' || !adminToken || process.env.RESPIRE_DEV_API_ADMIN_APPROVED !== 'true' || ![expectedSha, consoleSha, siteSha].every(value => /^[0-9a-f]{40}$/.test(value || ''))) {
   throw new Error('Approved isolated development URL, admin token and exact API/console/site SHAs are required.');
 }
@@ -18,7 +26,7 @@ const output = resolve(process.env.RESPIRE_WEB_SMOKE_OUTPUT || 'browser-smoke-ou
 await mkdir(output, { recursive: true, mode: 0o700 });
 const run = `${Date.now()}-${randomBytes(3).toString('hex')}`;
 const user = `web-smoke-${run}`;
-const email = `${user}@example.invalid`;
+const email = mailAddress;
 const password = randomBytes(20).toString('hex');
 const nextPassword = randomBytes(20).toString('hex');
 const owner = `web-owner-${run}`;
@@ -50,6 +58,29 @@ async function call(path, { method = 'GET', token, body, expected = 200 } = {}) 
   assert.equal(response.status(), expected, 'Development API returned an unexpected status');
   return response.json();
 }
+async function receivedCode(purpose, requestedAt) {
+  const waitSeconds = Number(process.env.RESPIRE_DEV_MAIL_WAIT_SECONDS || 120);
+  assert.ok(Number.isFinite(waitSeconds) && waitSeconds >= 30 && waitSeconds <= 600);
+  console.log('WAITING_FOR_MAIL ' + purpose);
+  const deadline = performance.now() + waitSeconds * 1000;
+  while (performance.now() < deadline) {
+    let stdout;
+    const remaining = Math.max(1, Math.floor(deadline - performance.now()));
+    try {
+      ({ stdout } = await readMail(mailReader[0], [...mailReader.slice(1), JSON.stringify({ recipient: email, requestedAt, purpose })], { timeout: Math.min(15000, remaining), maxBuffer: 4096 }));
+    } catch {
+      if (performance.now() >= deadline) break;
+      throw new Error('Development mailbox reader failed; credentials and message contents are not logged.');
+    }
+    let received;
+    try { received = JSON.parse(stdout); } catch { throw new Error('Development mailbox reader returned invalid JSON.'); }
+    if (typeof received.code === 'string' && /^\d{6}$/.test(received.code)) return received.code;
+    const pause = Math.min(2000, deadline - performance.now());
+    if (pause > 0) await new Promise(resolve => setTimeout(resolve, pause));
+  }
+  throw new Error('Verification email was not received before the deadline');
+}
+
 async function screenshot(name) {
   await page.screenshot({ path: resolve(output, `${name}.png`), fullPage: true, mask: [page.locator('input'), page.locator('textarea'), page.locator('code'), page.locator('pre'), page.locator('.demo-key'), page.locator('.setup-key'), page.locator('.verification-code'), page.locator('.secret-result')] });
 }
@@ -176,11 +207,14 @@ try {
     await navigate('security');
     await page.locator('.security-tabs').getByRole('button', { name: t('bindEmail'), exact: true }).click();
     await page.getByLabel(t('emailAddress'), { exact: true }).fill(email);
+    const requestedAt = new Date().toISOString();
     await responseFor('/api/self/email', () => page.getByRole('button', { name: t('sendCode'), exact: true }).click());
     const mail = await call('/admin/outbox', { token: adminToken });
-    const fixture = mail.items?.find(m => m.to === email && m.body?.startsWith('code='));
-    assert.ok(fixture, 'Development verification mail fixture absent');
-    await page.getByLabel(t('emailCode'), { exact: true }).fill(fixture.body.slice(5));
+    const fixture = mail.items?.find(m => m.to === email);
+    assert.ok(fixture, 'Development verification mail row absent');
+    assert.equal(fixture.body, undefined, 'Administrator API must not expose verification codes');
+    const code = await receivedCode('verify_email', requestedAt);
+    await page.getByLabel(t('emailCode'), { exact: true }).fill(code);
     await responseFor('/api/self/email/confirm', () => page.getByRole('button', { name: t('verifyAndBind'), exact: true }).click());
     assert.equal((await call('/api/self/keys', { token: userToken })).email, email);
     await page.getByText(t('currentEmail', { email }), { exact: true }).waitFor();
@@ -218,6 +252,34 @@ try {
     await page.locator('.console-main').waitFor();
     userToken = await page.evaluate(() => localStorage.getItem('onememory.userToken'));
     assert.ok(userToken);
+  });
+  await step('user-email-password-recovery', async () => {
+    const previousToken = userToken;
+    const vault = await call('/api/self/vault', { token: previousToken });
+    const recoveredPassword = randomBytes(20).toString('hex');
+    await page.locator('.sidebar-bottom').getByRole('button', { name: t('signOut'), exact: true }).click();
+    await page.getByRole('button', { name: t('forgotPassword'), exact: true }).click();
+    await page.getByLabel(t('username'), { exact: true }).fill(user);
+    const requestedAt = new Date().toISOString();
+    await responseFor('/forgot', () => page.getByRole('button', { name: t('sendCode'), exact: true }).click());
+    const code = await receivedCode('reset_password', requestedAt);
+    await page.getByLabel(t('emailCode'), { exact: true }).fill(code);
+    await page.getByLabel(t('newLoginPassword'), { exact: true }).fill(recoveredPassword);
+    await page.getByLabel(t('confirmLoginPassword'), { exact: true }).fill(recoveredPassword);
+    await responseFor('/reset', () => page.getByRole('button', { name: t('resetPassword'), exact: true }).click());
+    await call('/api/self', { token: previousToken, expected: 401 });
+    const previous = await authPayload(user, nextPassword);
+    await call('/login', { method: 'POST', body: previous, expected: 401 });
+    const recovered = await authPayload(user, recoveredPassword);
+    await call('/reset', { method: 'POST', body: { ...recovered, code }, expected: 401 });
+    await page.getByLabel(t('username'), { exact: true }).fill(user);
+    await page.getByLabel(t('loginPassword'), { exact: true }).fill(recoveredPassword);
+    await page.getByLabel(t('superOptional'), { exact: true }).fill(recovery);
+    await page.locator('.gate-form form').getByRole('button', { name: t('login'), exact: true }).click();
+    await page.locator('.console-main').waitFor();
+    userToken = await page.evaluate(() => localStorage.getItem('onememory.userToken'));
+    assert.deepEqual(await call('/api/self/vault', { token: userToken }), vault);
+    await screenshot('user-password-recovered');
   });
   await step('admin-fixture-owner-and-viewer-permissions', async () => {
     for (const [name, pass, role] of [[owner, ownerPassword, 'owner'], [viewer, viewerPassword, 'viewer']]) {

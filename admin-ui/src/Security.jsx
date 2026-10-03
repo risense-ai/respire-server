@@ -14,6 +14,7 @@ export function Security({ admin, token, me, notify, onReload, open, onLogout })
   const [email, setEmail] = useState(me?.email || '');
   const [emailCode, setEmailCode] = useState('');
   const [emailSent, setEmailSent] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
   const [totpSecret, setTotpSecret] = useState('');
   const [totpCode, setTotpCode] = useState('');
   const totp = !!me?.totp;
@@ -53,7 +54,7 @@ export function Security({ admin, token, me, notify, onReload, open, onLogout })
           {!admin && (
             <div className="setting-row">
               <Envelope size={25} />
-              <div><h3>{t('recoveryEmail')} {me?.email ? <Badge tone="green">{t('verified')}</Badge> : <Badge>{t('unbound')}</Badge>}</h3><p>{me?.email || t('notBound')}</p></div>
+              <div><h3>{t('recoveryEmail')} {me?.email_verified ? <Badge tone="green">{t('verified')}</Badge> : <Badge>{t(me?.email ? 'unverified' : 'unbound')}</Badge>}</h3><p>{me?.email || t('notBound')}</p></div>
               <Button onClick={() => setTab('mail')}>{t('bindEmail')}</Button>
             </div>
           )}
@@ -92,6 +93,9 @@ export function Security({ admin, token, me, notify, onReload, open, onLogout })
           <p>{t('currentEmail', { email: me?.email || t('unbound') })}</p>
           <form onSubmit={async (e) => {
             e.preventDefault();
+            if (emailBusy) return;
+            setEmailBusy(true);
+            setError('');
             try {
               if (!emailSent) {
                 await api('/api/self/email', { method: 'POST', token, body: { email } });
@@ -102,15 +106,26 @@ export function Security({ admin, token, me, notify, onReload, open, onLogout })
               await api('/api/self/email/confirm', { method: 'POST', token, body: { code: emailCode } });
               notify(t('emailBound'));
               setEmailSent(false);
+              setEmailCode('');
               onReload?.();
             } catch (err) {
               setError(err.message);
+            } finally {
+              setEmailBusy(false);
             }
           }}>
-            <label className="field">{t('emailAddress')}<input type="email" required value={email} onChange={(e) => { setEmail(e.target.value); setEmailSent(false); }} /></label>
-            {emailSent && <label className="field">{t('emailCode')}<input required value={emailCode} onChange={(e) => setEmailCode(e.target.value)} /></label>}
+            <label className="field">{t('emailAddress')}<input type="email" required disabled={emailBusy} value={email} onChange={(e) => { setEmail(e.target.value); setEmailSent(false); setEmailCode(''); setError(''); }} /></label>
+            {emailSent && <label className="field">{t('emailCode')}<input required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={emailCode} onChange={(e) => setEmailCode(e.target.value)} /></label>}
             {error && <p className="form-error" role="alert">{error}</p>}
-            <Button primary>{emailSent ? t('verifyAndBind') : t('sendCode')}</Button>
+            <Button primary disabled={emailBusy}>{emailSent ? t('verifyAndBind') : t('sendCode')}</Button>
+            {emailSent && <Button type="button" disabled={emailBusy} onClick={async () => {
+              setEmailBusy(true); setError('');
+              try {
+                await api('/api/self/email', { method: 'POST', token, body: { email } });
+                setEmailCode(''); notify(t('codeSent'));
+              } catch (err) { setError(err.message); }
+              finally { setEmailBusy(false); }
+            }}>{t('resendCode')}</Button>}
           </form>
         </section>
       ) : (

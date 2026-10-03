@@ -35,6 +35,11 @@ mod tests {
         // This database belongs only to this test. Reconstruct the pre-v2 schema.
         repo.lock().batch_execute(
             "DROP TABLE sync_resolutions,sync_heads,sync_versions,sync_accounts;
+            ALTER TABLE mail_outbox DROP COLUMN status, DROP COLUMN attempts,
+                DROP COLUMN next_attempt_at, DROP COLUMN expires_at, DROP COLUMN attempted_at,
+                DROP COLUMN sent_at, DROP COLUMN last_error, DROP COLUMN code_id;
+            ALTER TABLE users DROP COLUMN email_verified;
+            ALTER TABLE verify_codes DROP COLUMN failed_attempts;
             UPDATE schema_meta SET v='1' WHERE k='version';
             INSERT INTO blobs(\"user\",id,ciphertext,nonce,updated_at,deleted,rev)
             VALUES ('u','old','aa','11','2026-09-19T00:00:00.001Z',0,4000);
