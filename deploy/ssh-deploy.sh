@@ -22,7 +22,9 @@ test "$(cat server-sha.txt)" = "$revision"
 # Existing database and verified restore are prerequisites, never create empty data.
 export ONEMEMORY_HOST_BIND=127.0.0.1 ONEMEMORY_HOST_PORT="$api_port"
 export ONEMEMORY_WEB_BIND=127.0.0.1 ONEMEMORY_WEB_PORT="$web_port"
-compose=(docker compose --project-name "$project" --env-file "$directory/.env")
+mail_env=()
+if [ -f /opt/respire-secrets/mxroute.env ]; then mail_env=(--env-file /opt/respire-secrets/mxroute.env); fi
+compose=(docker compose --project-name "$project" --env-file "$directory/.env" "${mail_env[@]}")
 if [ -f "$directory/deployment.env" ]; then compose+=(--env-file "$directory/deployment.env"); fi
 compose+=(-f "$directory/compose.yaml")
 test -n "$("${compose[@]}" ps --status running -q db)"
@@ -42,9 +44,9 @@ export ONEMEMORY_WEB_IMAGE="respire-web:$revision"
 install -m 600 compose.yaml "$directory/compose.yaml"
 install -m 600 compose-web.yaml "$directory/compose-web.yaml"
 printf 'ONEMEMORY_SERVER_IMAGE=respire-server:%s\nONEMEMORY_WEB_IMAGE=respire-web:%s\nONEMEMORY_HOST_BIND=127.0.0.1\nONEMEMORY_HOST_PORT=%s\nONEMEMORY_WEB_BIND=127.0.0.1\nONEMEMORY_WEB_PORT=%s\n' "$revision" "$revision" "$api_port" "$web_port" > "$directory/deployment.env"
-compose=(docker compose --project-name "$project" --env-file "$directory/.env" --env-file "$directory/deployment.env" -f "$directory/compose.yaml")
+compose=(docker compose --project-name "$project" --env-file "$directory/.env" "${mail_env[@]}" --env-file "$directory/deployment.env" -f "$directory/compose.yaml")
 "${compose[@]}" up -d --no-build --wait --wait-timeout 180
-docker compose --project-name "${project}-web" --env-file "$directory/.env" --env-file "$directory/deployment.env" -f "$directory/compose-web.yaml" up -d --no-build --wait --wait-timeout 120
+docker compose --project-name "${project}-web" --env-file "$directory/.env" "${mail_env[@]}" --env-file "$directory/deployment.env" -f "$directory/compose-web.yaml" up -d --no-build --wait --wait-timeout 120
 curl -fsS --max-time 10 "http://127.0.0.1:$api_port/ready"
 curl -fsS --max-time 10 -o /dev/null "http://127.0.0.1:$web_port/"
 printf '%s\n' "$revision" > "$directory/current-revision"

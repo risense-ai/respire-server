@@ -180,7 +180,7 @@ export function Gate({ admin, onEnter, notify }) {
           {!admin && step === 1 && (
             <div className="tabs stretch">
               {[['login', t('login')], ['register', t('register')]].map(([id, label]) => (
-                <button key={id} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setError(''); setTicket(''); }}>{label}</button>
+                <button key={id} disabled={busy} className={tab === id ? 'active' : ''} onClick={() => { setTab(id); setError(''); setTicket(''); }}>{label}</button>
               ))}
             </div>
           )}
