@@ -276,6 +276,28 @@ impl BlobRepo {
     }
 
     pub(crate) fn list_users(&self, q: &str, page: u32, limit: u32) -> Result<(Vec<serde_json::Value>, i64)> {
+        self.list_users_filtered(q, page, limit, "all")
+    }
+
+    pub(crate) fn users_summary(&self) -> Result<serde_json::Value> {
+        let row = self.lock().query_one(
+            r#"SELECT COUNT(*),
+                      COUNT(*) FILTER (WHERE deleted = 0 AND disabled = 0),
+                      COUNT(*) FILTER (WHERE deleted = 0 AND disabled <> 0),
+                      COUNT(*) FILTER (WHERE deleted <> 0),
+                      (SELECT COUNT(*) FROM sessions),
+                      (SELECT COUNT(*) FROM blobs WHERE deleted = 0)
+               FROM users"#,
+            &[],
+        )?;
+        Ok(serde_json::json!({
+            "all": row.get::<_, i64>(0), "ok": row.get::<_, i64>(1),
+            "banned": row.get::<_, i64>(2), "deleted": row.get::<_, i64>(3),
+            "sessions": row.get::<_, i64>(4), "ciphertext": row.get::<_, i64>(5),
+        }))
+    }
+
+    pub(crate) fn list_users_filtered(&self, q: &str, page: u32, limit: u32, status: &str) -> Result<(Vec<serde_json::Value>, i64)> {
         let limit = limit.clamp(1, 100) as i64;
         let page = page.max(1) as i64;
         let offset = (page - 1) * limit;
@@ -283,9 +305,12 @@ impl BlobRepo {
             .lock()
             .query_one(
                 r#"SELECT COUNT(*) FROM users u
-                   WHERE $1 = '' OR position(lower($1) in lower(u."user")) > 0
-                      OR position(lower($1) in lower(u.email)) > 0"#,
-                &[&q],
+                   WHERE ($1 = '' OR position(lower($1) in lower(u."user")) > 0
+                      OR position(lower($1) in lower(u.email)) > 0)
+                     AND ($2 = 'all' OR ($2 = 'ok' AND u.deleted = 0 AND u.disabled = 0)
+                          OR ($2 = 'banned' AND u.deleted = 0 AND u.disabled <> 0)
+                          OR ($2 = 'deleted' AND u.deleted <> 0))"#,
+                &[&q, &status],
             )?
             .get(0);
         let rows = self.lock().query(
@@ -293,11 +318,14 @@ impl BlobRepo {
                       COUNT(CASE WHEN b.deleted = 0 THEN 1 END) AS active,
                       (SELECT COUNT(*) FROM sessions s WHERE s."user" = u."user") AS sessions
                FROM users u LEFT JOIN blobs b ON b."user" = u."user"
-               WHERE $1 = '' OR position(lower($1) in lower(u."user")) > 0
-                  OR position(lower($1) in lower(u.email)) > 0
+               WHERE ($1 = '' OR position(lower($1) in lower(u."user")) > 0
+                  OR position(lower($1) in lower(u.email)) > 0)
+                 AND ($4 = 'all' OR ($4 = 'ok' AND u.deleted = 0 AND u.disabled = 0)
+                      OR ($4 = 'banned' AND u.deleted = 0 AND u.disabled <> 0)
+                      OR ($4 = 'deleted' AND u.deleted <> 0))
                GROUP BY u."user", u.created_at, u.token, u.disabled, u.email, u.deleted
-               ORDER BY u.created_at ASC LIMIT $2 OFFSET $3"#,
-            &[&q, &limit, &offset],
+               ORDER BY u.created_at ASC, u."user" ASC LIMIT $2 OFFSET $3"#,
+            &[&q, &limit, &offset, &status],
         )?;
         let users = rows
             .iter()

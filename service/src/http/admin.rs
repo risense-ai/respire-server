@@ -58,16 +58,23 @@ pub(super) fn route(
         }
         ("GET", "users") => {
             let q = query_param(query, "q").unwrap_or("").to_owned();
-            let page = query_param(query, "page").and_then(|s| s.parse().ok()).unwrap_or(1);
-            let limit = query_param(query, "limit").and_then(|s| s.parse().ok()).unwrap_or(20);
+            let page = query_param(query, "page").and_then(|s| s.parse::<u32>().ok()).unwrap_or(1).max(1);
+            let limit = query_param(query, "limit").and_then(|s| s.parse::<u32>().ok()).unwrap_or(50).clamp(1, 100);
+            let status = query_param(query, "status").unwrap_or("all");
+            if !matches!(status, "all" | "ok" | "banned" | "deleted") {
+                return json(400, serde_json::json!({"error": "invalid user status"}));
+            }
             if query_param(query, "export").is_some() {
                 return match repo.users_csv(&q) {
                     Ok(csv) => json(200, serde_json::json!({"csv": csv})),
                     Err(e) => server_error(e),
                 };
             }
-            match repo.list_users(&q, page, limit) {
-                Ok((users, total)) => json(200, serde_json::json!({"users": users, "total": total, "page": page, "limit": limit})),
+            match repo.list_users_filtered(&q, page, limit, status) {
+                Ok((users, total)) => match repo.users_summary() {
+                    Ok(summary) => json(200, serde_json::json!({"users": users, "total": total, "page": page, "limit": limit, "summary": summary})),
+                    Err(e) => server_error(e),
+                },
                 Err(e) => server_error(e),
             }
         }

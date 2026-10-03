@@ -41,6 +41,8 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
   useI18n();
   const [users, setUsers] = useState([]);
   const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState(null);
+  const pageSize = 50;
   const [pn, setPn] = useState(1);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
@@ -56,10 +58,11 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
   const canWrite = me && (me.role === 'owner' || me.role === 'admin');
   const isOwner = me?.role === 'owner';
 
-  const loadUsers = async (p = pn, q = query) => {
-    const list = await api(`/admin/users?q=${encodeURIComponent(q)}&page=${p}&limit=7`, { token });
+  const loadUsers = async (p = pn, q = query, status = filter) => {
+    const list = await api(`/admin/users?q=${encodeURIComponent(q)}&page=${p}&limit=${pageSize}&status=${status}`, { token });
     setUsers(list.users || []);
     setTotal(list.total || 0);
+    setSummary(list.summary);
     setPn(list.page || p);
   };
   const loadAll = async () => {
@@ -95,15 +98,10 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
     return () => document.removeEventListener('keydown', handler);
   }, [selected, page]);
 
-  const shown = users.filter((u) => filter === 'all' || statusOf(u) === filter);
-  const pages = Math.max(1, Math.ceil(total / 7));
+  const shown = users;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
   const current = users.find((u) => u.user === selected);
-  const counts = {
-    all: total,
-    ok: users.filter((u) => statusOf(u) === 'ok').length,
-    banned: users.filter((u) => statusOf(u) === 'banned').length,
-    deleted: users.filter((u) => statusOf(u) === 'deleted').length,
-  };
+  const counts = summary || {};
 
   const createUser = () => open({
     title: t('createUser'),
@@ -147,16 +145,16 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
           {canWrite ? <Button icon={UserPlus} primary onClick={createUser}>{t('createUser')}</Button> : null}
         </Heading>
         <div className="metric-strip">
-          <div><span>{t('allUsers')}</span><strong>{total}<small>{t('people')}</small></strong></div>
-          <div><span>{t('pageOk')}</span><strong>{users.filter((u) => statusOf(u) === 'ok').length}<Badge tone="green">{t('runningOk')}</Badge></strong></div>
-          <div><span>{t('activeSessions')}</span><strong>{users.reduce((s, u) => s + (u.session_count || 0), 0)}<small>{t('unitGe')}</small></strong></div>
-          <div><span>{t('cloudCipher')}</span><strong>{users.reduce((s, u) => s + (u.active || 0), 0).toLocaleString()}<small>{t('unitTiao')}</small></strong></div>
+          <div><span>{t('allUsers')}</span><strong>{summary?.all ?? '—'}<small>{t('people')}</small></strong></div>
+          <div><span>{t('pageOk')}</span><strong>{summary?.ok ?? '—'}</strong></div>
+          <div><span>{t('activeSessions')}</span><strong>{summary?.sessions ?? '—'}<small>{t('unitGe')}</small></strong></div>
+          <div><span>{t('cloudCipher')}</span><strong>{summary?.ciphertext?.toLocaleString() ?? '—'}<small>{t('unitTiao')}</small></strong></div>
         </div>
         <section className="panel table-panel">
           <div className="panel-toolbar">
             <div className="tabs" aria-label={t('userStatusFilter')}>
               {[['all', t('filterAll')], ['ok', t('statusOk')], ['banned', t('statusBanned')], ['deleted', t('statusDeleted')]].map(([id, label]) => (
-                <button key={id} className={filter === id ? 'active' : ''} onClick={() => { setFilter(id); setSelected(null); }}>{label}<span>{counts[id]}</span></button>
+                <button key={id} className={filter === id ? 'active' : ''} onClick={() => { setFilter(id); setSelected(null); loadUsers(1, query, id).catch((e) => notify(e.message)); }}>{label}<span>{counts[id] ?? '—'}</span></button>
               ))}
             </div>
             <div className="toolbar-controls">
