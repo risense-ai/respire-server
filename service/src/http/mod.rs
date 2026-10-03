@@ -30,6 +30,7 @@ pub(crate) use bound::serve_with_ready;
 pub fn serve(bind: &str, database_url: &str, admin_token: Option<&str>) -> anyhow::Result<()> {
     check_config()?;
     let repo = crate::store::BlobRepo::connect(database_url)?;
+    crate::mail::start(database_url)?;
     serve_bound(bind, repo, admin_token)
 }
 

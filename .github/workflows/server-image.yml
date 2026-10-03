@@ -137,7 +137,7 @@ jobs:
           wait_health "/health did not become ready before the timeout"
           curl -fsS "$BASE/health"
           python3 service/sync_probe.py --url "$BASE" --user sync-ci-probe
-          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qx '3'
+          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qx '4'
           curl -fsS -H 'Content-Type: application/json' \
             -d '{"user":"ci-smoke","pass_hash":"ab","salt":"cd"}' \
             "$BASE/register"

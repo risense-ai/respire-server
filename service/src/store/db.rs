@@ -489,6 +489,7 @@ impl BlobRepo {
         Ok((items, total))
     }
 
+    #[cfg(test)]
     pub(crate) fn mail_outbox(&self, to: &str, subject: &str, body: &str) -> Result<()> {
         let at = now_rfc();
         self.lock().execute(
@@ -504,7 +505,7 @@ impl BlobRepo {
         let offset = (page - 1) * limit;
         let total: i64 = self.lock().query_one("SELECT COUNT(*) FROM mail_outbox", &[])?.get(0);
         let rows = self.lock().query(
-            "SELECT id, at, to_addr, subject, body FROM mail_outbox ORDER BY id DESC LIMIT $1 OFFSET $2",
+            "SELECT id, at, to_addr, subject, status, attempts, last_error FROM mail_outbox ORDER BY id DESC LIMIT $1 OFFSET $2",
             &[&limit, &offset],
         )?;
         let items = rows
@@ -516,7 +517,9 @@ impl BlobRepo {
                     "at": row.get::<_, String>(1),
                     "to": row.get::<_, String>(2),
                     "subject": row.get::<_, String>(3),
-                    "body": row.get::<_, String>(4),
+                    "status": row.get::<_, String>(4),
+                    "attempts": row.get::<_, i32>(5),
+                    "last_error": row.get::<_, String>(6),
                 })
             })
             .collect();
@@ -551,18 +554,45 @@ impl BlobRepo {
         Ok(Some(audience))
     }
 
+    #[cfg(test)]
     pub(crate) fn issue_email_code(&self, audience: &str, email: &str, purpose: &str) -> Result<String> {
+        self.enqueue_email_code(audience, email, purpose, false)?.context("email code was not queued")
+    }
+
+    pub(crate) fn queue_email_code(&self, audience: &str, email: &str, purpose: &str) -> Result<bool> {
+        Ok(self.enqueue_email_code(audience, email, purpose, true)?.is_some())
+    }
+
+    fn enqueue_email_code(&self, audience: &str, email: &str, purpose: &str, throttle: bool) -> Result<Option<String>> {
+        let subject = match purpose {
+            "verify_email" => "Respire email verification",
+            "reset_password" => "Respire password reset",
+            _ => anyhow::bail!("unsupported email verification purpose"),
+        };
+        let _: lettre::message::Mailbox = email.parse().context("invalid email address")?;
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        tx.query_one("SELECT pg_advisory_xact_lock(hashtextextended($1, 1869440359))", &[&audience])?;
+        if throttle && tx.query_opt("SELECT 1 FROM verify_codes WHERE audience=$1 AND purpose=$2
+            AND expires_at::timestamptz > NOW()+INTERVAL '9 minutes' LIMIT 1", &[&audience, &purpose])?.is_some() {
+            return Ok(None);
+        }
         let id = random_hex(16);
         let n = (uuid::Uuid::new_v4().as_u128() % 1_000_000) as u32;
         let code = format!("{n:06}");
         let hash = format!("{:x}", Sha256::digest(code.as_bytes()));
         let exp = (chrono::Utc::now() + chrono::Duration::minutes(10))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        self.lock().execute(
+        tx.execute("DELETE FROM verify_codes WHERE audience=$1 AND purpose=$2", &[&audience, &purpose])?;
+        tx.execute(
             "INSERT INTO verify_codes (id, audience, purpose, code_hash, email, expires_at) VALUES ($1,$2,$3,$4,$5,$6)",
             &[&id, &audience, &purpose, &hash, &email, &exp],
         )?;
-        Ok(code)
+        let body = format!("Your Respire verification code is {code}.\n\nIt expires in 10 minutes. If you did not request this email, you can ignore it.");
+        tx.execute("INSERT INTO mail_outbox (at, to_addr, subject, body, status, expires_at, code_id)
+            VALUES ($1,$2,$3,$4,'pending',$5::text::timestamptz,$6)", &[&now_rfc(), &email, &subject, &body, &exp, &id])?;
+        tx.commit()?;
+        Ok(Some(code))
     }
 
     pub(crate) fn check_email_code(&self, audience: &str, purpose: &str, code: &str) -> Result<bool> {
@@ -714,9 +744,11 @@ impl BlobRepo {
     }
 
     pub(crate) fn confirm_email(&self, user: &str, code: &str) -> Result<bool> {
-        let row = self.lock().query_opt(
-            "SELECT id, email, expires_at FROM verify_codes WHERE audience=$1 AND purpose='verify_email'
-             ORDER BY expires_at DESC LIMIT 1",
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        let row = tx.query_opt(
+            "SELECT id, email, expires_at, code_hash FROM verify_codes WHERE audience=$1 AND purpose='verify_email'
+             ORDER BY expires_at DESC LIMIT 1 FOR UPDATE",
             &[&user],
         )?;
         let Some(row) = row else {
@@ -725,19 +757,21 @@ impl BlobRepo {
         let id: String = row.get(0);
         let email: String = row.get(1);
         let exp: String = row.get(2);
-        let stored: String = self
-            .lock()
-            .query_one("SELECT code_hash FROM verify_codes WHERE id=$1", &[&id])?
-            .get(0);
-        self.lock().execute("DELETE FROM verify_codes WHERE id=$1", &[&id])?;
+        let stored: String = row.get(3);
         let hash = format!("{:x}", Sha256::digest(code.trim().as_bytes()));
         if stored != hash {
+            tx.execute("UPDATE verify_codes SET failed_attempts=failed_attempts+1 WHERE id=$1", &[&id])?;
+            tx.execute("DELETE FROM verify_codes WHERE id=$1 AND failed_attempts >= 5", &[&id])?;
+            tx.commit()?;
             return Ok(false);
         }
         if is_expired(&exp) {
             return Ok(false);
         }
-        self.lock().execute(r#"UPDATE users SET email=$2 WHERE "user"=$1"#, &[&user, &email])?;
+        tx.execute("DELETE FROM verify_codes WHERE id=$1", &[&id])?;
+        tx.execute(r#"UPDATE users SET email=$2, email_verified=TRUE WHERE "user"=$1"#, &[&user, &email])?;
+        tx.commit()?;
+        drop(client);
         self.audit(user, "email_verify", user, &email)?;
         Ok(true)
     }
@@ -987,7 +1021,7 @@ impl BlobRepo {
 
     pub(crate) fn user_keys(&self, user: &str, token: &str) -> Result<serde_json::Value> {
         let row = self.lock().query_one(
-            r#"SELECT salt, email, totp_secret FROM users WHERE "user"=$1"#,
+            r#"SELECT salt, email, totp_secret, email_verified FROM users WHERE "user"=$1"#,
             &[&user],
         )?;
         let salt: String = row.get(0);
@@ -1000,6 +1034,7 @@ impl BlobRepo {
             "token_masked": mask_token(token),
             "sessions": sessions,
             "email": email,
+            "email_verified": row.get::<_, bool>(3),
             "totp": !totp.is_empty(),
             "note": "The server stores login hashes, email, and API tokens only. Super password / Secret Key / URK stay on the client; the cloud cannot recover them. If lost, re-wrap keys on the client."
         }))

@@ -118,15 +118,15 @@ pub(super) fn route(
             return Some(json(400, serde_json::json!({"error": "bad json"})));
         };
         let email = parsed.email.trim();
-        if email.is_empty() || !email.contains('@') {
+        if email.parse::<lettre::message::Mailbox>().is_err() {
             return Some(json(400, serde_json::json!({"error": "invalid email"})));
         }
-        return Some(match repo.issue_email_code(user, email, "verify_email") {
-            Ok(code) => {
-                let _ = repo.mail_outbox(email, "respire verify email", &format!("code={code}"));
+        return Some(match repo.queue_email_code(user, email, "verify_email") {
+            Ok(true) => {
                 let _ = repo.audit(user, "email_code", user, email);
-                json(200, serde_json::json!({"sent": true}))
+                json(200, serde_json::json!({"queued": true}))
             }
+            Ok(false) => json(429, serde_json::json!({"error": "wait 60 seconds before requesting another code"})),
             Err(e) => server_error(e),
         });
     }

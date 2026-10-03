@@ -399,11 +399,9 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
   }
 
   if (page === 'mail') {
-    const code = (mail?.body || '').match(/code=(\d+)/)?.[1];
     return (
       <>
         <Heading eyebrow="ADMINISTRATION / OUTBOX" title={t('mailTitle')} description={t('mailDesc')} />
-        <Note icon={WarningCircle} tone="amber">{t('mailDevNote')}</Note>
         <section className="mail-layout panel">
           <div className="mail-list">
             <div className="section-top"><h2>{t('pendingMail')}</h2><Badge>{outbox.length}</Badge></div>
@@ -418,12 +416,13 @@ export function AdminPages({ page, token, me, notify, open, onReloadMe }) {
           </div>
           {mail ? (
             <article className="mail-preview">
-              <Badge tone="purple">{t('queue')}</Badge>
+              <Badge tone="purple">{mail.status}</Badge>
               <h2>{mail.subject}</h2>
               <p className="dim">{t('sentTo', { to: mail.to })}<br />{mail.at}</p>
               <hr />
               <img src={brandLogo} alt="Respire" />
-              {code ? <div className="verification-code">{code}</div> : <p>{mail.body}</p>}
+              <p>{t('mailAttempts', { count: mail.attempts })}</p>
+              {mail.last_error && <p>{mail.last_error}</p>}
               <p className="dim">{t('resetNotDecrypt')}</p>
             </article>
           ) : <article className="mail-preview"><Empty /></article>}

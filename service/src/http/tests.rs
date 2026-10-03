@@ -719,11 +719,10 @@ use respire::memory::crypto::{derive_auth_salt, derive_pass_hash};
         assert_eq!(status, 200);
         let (status, reply) = handle(&repo, "GET", "/admin/outbox", "", Some(&owner_tok));
         assert_eq!(status, 200, "{reply}");
-        assert!(reply.contains("code="));
-        let body = serde_json::from_str::<serde_json::Value>(&reply).context("required")?["items"][0]["body"]
-            .as_str()
-            .context("required")?
-            .to_owned();
+        let item = serde_json::from_str::<serde_json::Value>(&reply).context("required")?["items"][0].clone();
+        assert!(item.get("body").is_none());
+        assert_eq!(item["status"], "pending");
+        let body: String = repo.lock().query_one("SELECT body FROM mail_outbox WHERE id=$1", &[&item["id"].as_i64().context("required")?])?.get(0);
         let reset_code = body
             .split(|c: char| !c.is_ascii_digit())
             .find(|w| w.len() == 6)

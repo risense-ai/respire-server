@@ -274,7 +274,15 @@ mod tests {
     fn schema_two_upgrade_keeps_old_versions_and_starts_empty_resolution_stream() -> Result<()> {
         let (repo, epoch, _) = setup()?;
         let cursor = repo.pull("u", None)?.1;
-        repo.lock().batch_execute("DROP TABLE sync_resolutions; ALTER TABLE sync_accounts DROP COLUMN resolution_rev; UPDATE schema_meta SET v='2' WHERE k='version';")?;
+        // Reconstruct the actual version-2 schema, including the pre-worker email table.
+        repo.lock().batch_execute("DROP TABLE sync_resolutions;
+            ALTER TABLE sync_accounts DROP COLUMN resolution_rev;
+            ALTER TABLE mail_outbox DROP COLUMN status, DROP COLUMN attempts,
+                DROP COLUMN next_attempt_at, DROP COLUMN expires_at, DROP COLUMN attempted_at,
+                DROP COLUMN sent_at, DROP COLUMN last_error, DROP COLUMN code_id;
+            ALTER TABLE users DROP COLUMN email_verified;
+            ALTER TABLE verify_codes DROP COLUMN failed_attempts;
+            UPDATE schema_meta SET v='2' WHERE k='version';")?;
         crate::store::migrations::apply(&mut repo.lock())?;
         assert_eq!(repo.pull("u", None)?.1, cursor);
         assert_eq!(

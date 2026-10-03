@@ -58,11 +58,15 @@ pub(super) fn unauthenticated(
                 return Some(json(400, serde_json::json!({"error": "bad json"})));
             };
             let user = parsed.user.trim();
-            if let Ok(Some(email)) = repo.user_email(user) {
+            let email = match repo.user_email(user) {
+                Ok(email) => email,
+                Err(e) => return Some(server_error(e)),
+            };
+            if let Some(email) = email {
                 if !email.is_empty() {
-                    if let Ok(code) = repo.issue_email_code(user, &email, "reset_password") {
-                        let _ = repo.mail_outbox(&email, "respire password reset", &format!("code={code}"));
-                        let _ = repo.audit(user, "forgot", user, "");
+                    match repo.queue_email_code(user, &email, "reset_password") {
+                        Ok(_) => { let _ = repo.audit(user, "forgot", user, ""); }
+                        Err(e) => return Some(server_error(e)),
                     }
                 }
             }

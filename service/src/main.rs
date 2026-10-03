@@ -6,6 +6,7 @@
 
 mod access;
 mod http;
+mod mail;
 mod store;
 mod totp;
 mod web;
