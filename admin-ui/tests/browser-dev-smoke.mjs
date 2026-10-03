@@ -29,7 +29,7 @@ const rows = [];
 const created = new Set();
 let current = 'launch';
 const browser = await chromium.launch({ headless: true, ...(process.env.RESPIRE_BROWSER_EXECUTABLE ? { executablePath: process.env.RESPIRE_BROWSER_EXECUTABLE } : {}) });
-const context = await browser.newContext({ baseURL: origin, viewport: { width: 1440, height: 1000 } });
+const context = await browser.newContext({ baseURL: origin, viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
 const page = await context.newPage();
 page.setDefaultTimeout(30000);
 let userToken;

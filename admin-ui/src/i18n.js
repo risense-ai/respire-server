@@ -1013,7 +1013,7 @@ export function getLocale() {
 }
 
 export function t(key, vars) {
-  let s = (DICTS[locale] && DICTS[locale][key]) || EN[key] || key;
+  let s = DICTS[locale]?.[key] ?? EN[key] ?? key;
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
       s = s.split(`{${k}}`).join(String(v));
