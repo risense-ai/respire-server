@@ -128,13 +128,13 @@ export function Modal({
     if (e.target === ref.current) onClose();
   }}><form onSubmit={submit}><div className="modal-heading"><div className="modal-mark">{config.icon ? React.createElement(config.icon, {
             size: 26
-          }) : <ShieldCheck size={26} />}</div><button type="button" className="icon-button" aria-label={t('closeDialog')} onClick={onClose}><X size={22} /></button></div><h2>{config.title}</h2>{config.description && <p className="modal-description">{config.description}</p>}{config.body}{config.fields?.map(f => <label className="field" key={f.name}>{f.label}{f.options ? <select value={values[f.name]} onChange={e => setValues({
+          }) : <ShieldCheck size={26} />}</div><button type="button" className="icon-button" aria-label={t('closeDialog')} onClick={onClose}><X size={22} /></button></div><h2>{config.title}</h2>{config.description && <p className="modal-description">{config.description}</p>}{config.body}{config.fields?.map(f => <label className="field" key={f.name}>{f.label}{f.options ? <select aria-label={f.label} value={values[f.name]} onChange={e => setValues({
           ...values,
           [f.name]: e.target.value
-        })}>{f.options.map(o => <option key={optionValue(o)} value={optionValue(o)}>{optionLabel(o)}</option>)}</select> : f.type === 'textarea' ? <textarea rows={f.rows || 6} required={f.required !== false} placeholder={f.placeholder} value={values[f.name]} onChange={e => setValues({
+        })}>{f.options.map(o => <option key={optionValue(o)} value={optionValue(o)}>{optionLabel(o)}</option>)}</select> : f.type === 'textarea' ? <textarea aria-label={f.label} rows={f.rows || 6} required={f.required !== false} placeholder={f.placeholder} value={values[f.name]} onChange={e => setValues({
           ...values,
           [f.name]: e.target.value
-        })} /> : <input autoFocus={f.autofocus} type={f.type || 'text'} required={f.required !== false} placeholder={f.placeholder} value={values[f.name]} onChange={e => setValues({
+        })} /> : <input aria-label={f.label} autoFocus={f.autofocus} type={f.type || 'text'} required={f.required !== false} placeholder={f.placeholder} value={values[f.name]} onChange={e => setValues({
           ...values,
           [f.name]: e.target.value
         })} autoComplete="off" minLength={f.minLength} />}{f.hint && <small>{f.hint}</small>}</label>)}{error && <p role="alert" className="form-error"><WarningCircle size={18} />{error}</p>}<div className="modal-footer"><Button type="button" onClick={onClose}>{config.cancel || t('cancel')}</Button><Button type="submit" primary={!config.danger} danger={config.danger} className={config.danger ? 'purge' : ''} disabled={busy}>{busy ? t('working') : config.submit || t('confirm')}</Button></div></form></dialog>;
