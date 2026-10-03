@@ -962,7 +962,7 @@ impl BlobRepo {
         }
         if let Some(email) = email {
             let e = email.trim();
-            self.lock().execute(r#"UPDATE users SET email=$2, email_verified=FALSE WHERE "user"=$1"#, &[&user, &e])?;
+            self.lock().execute(r#"UPDATE users SET email=$2, email_verified=(email_verified AND email=$2) WHERE "user"=$1"#, &[&user, &e])?;
         }
         Ok(true)
     }
@@ -1659,6 +1659,8 @@ mod tests {
         let code = repo.issue_email_code("hank", "a@b.c", "verify_email").context("required")?;
         assert!(repo.confirm_email("hank", &code).context("required")?);
         assert_eq!(repo.user_email("hank").context("required")?.as_deref(), Some("a@b.c"));
+        assert_eq!(repo.user_keys("hank", "token")?["email_verified"], true);
+        repo.admin_update_user("hank", None, None, None, Some("a@b.c"))?;
         assert_eq!(repo.user_keys("hank", "token")?["email_verified"], true);
         repo.admin_update_user("hank", None, None, None, Some("new@b.c"))?;
         assert_eq!(repo.user_keys("hank", "token")?["email_verified"], false);
