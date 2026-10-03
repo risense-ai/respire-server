@@ -9,6 +9,44 @@ on:
 permissions:
   contents: read
 jobs:
+  frontend:
+    name: Console build and browser rendering
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: admin-ui/package-lock.json
+      - name: Install, test and build real console
+        working-directory: admin-ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
+      - name: Install Chromium for isolated rendering
+        working-directory: admin-ui
+        run: npx playwright install --with-deps chromium
+      - name: Render actual desktop and mobile sign-in surfaces
+        working-directory: admin-ui
+        env:
+          RESPIRE_RENDER_OUTPUT: render-output
+        run: npm run test:render
+      - name: Record exact source and compiled HTML hash
+        run: |
+          mkdir -p console-artifact
+          cp admin-ui/dist/index.html console-artifact/console.html
+          cp -a admin-ui/render-output console-artifact/render-output
+          printf '%s\n' "$GITHUB_SHA" > console-artifact/server-sha.txt
+          (cd console-artifact && sha256sum console.html server-sha.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-${{ github.sha }}
+          path: console-artifact/
+          retention-days: 7
   check:
     name: cargo check
     runs-on: ubuntu-latest

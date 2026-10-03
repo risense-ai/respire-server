@@ -93,7 +93,9 @@ export function Modal({
   onClose
 }) {
   const ref = useRef(null);
-  const [values, setValues] = useState(Object.fromEntries((config.fields || []).map(f => [f.name, f.value || ''])));
+  const optionValue = option => Array.isArray(option) ? option[0] : option?.value ?? option;
+  const optionLabel = option => Array.isArray(option) ? option[1] : option?.label ?? option;
+  const [values, setValues] = useState(Object.fromEntries((config.fields || []).map(f => [f.name, f.value ?? (f.options?.length ? optionValue(f.options[0]) : '')])));
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -129,7 +131,7 @@ export function Modal({
           }) : <ShieldCheck size={26} />}</div><button type="button" className="icon-button" aria-label={t('closeDialog')} onClick={onClose}><X size={22} /></button></div><h2>{config.title}</h2>{config.description && <p className="modal-description">{config.description}</p>}{config.body}{config.fields?.map(f => <label className="field" key={f.name}>{f.label}{f.options ? <select value={values[f.name]} onChange={e => setValues({
           ...values,
           [f.name]: e.target.value
-        })}>{f.options.map(o => <option key={o.value || o} value={o.value || o}>{o.label || o}</option>)}</select> : f.type === 'textarea' ? <textarea rows={f.rows || 6} required={f.required !== false} placeholder={f.placeholder} value={values[f.name]} onChange={e => setValues({
+        })}>{f.options.map(o => <option key={optionValue(o)} value={optionValue(o)}>{optionLabel(o)}</option>)}</select> : f.type === 'textarea' ? <textarea rows={f.rows || 6} required={f.required !== false} placeholder={f.placeholder} value={values[f.name]} onChange={e => setValues({
           ...values,
           [f.name]: e.target.value
         })} /> : <input autoFocus={f.autofocus} type={f.type || 'text'} required={f.required !== false} placeholder={f.placeholder} value={values[f.name]} onChange={e => setValues({

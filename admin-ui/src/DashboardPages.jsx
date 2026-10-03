@@ -26,83 +26,9 @@ function maskKey(s) {
   return `${s.slice(0, 3)}-••••-••••-••••`;
 }
 
-const INSTALL_HINT = {
-  zh: {
-    title: '还没有记忆',
-    body: '先从维护者取得经过验证的私有 Respire 构建，再运行 rsrs web 打开本地图形界面。',
-    copy: '复制提示词',
-    copied: '已复制',
-    dismiss: '关闭',
-    prompt: `帮我装好 Respire（唯一命令 rsrs，给我的 AI 用的跨设备记忆系统）。目前仓库和构建均私有，不假设公开 npm 包可用。全程自动执行，别中途停下问我：
-
-1. 使用维护者提供且获准访问的私有构建安装 Respire，再跑 rsrs doctor 检查依赖。
-2. 跑 rsrs inject，把记忆注入本机 AI 工具（必须在登录/注册之前完成）。
-3. 问我要云同步还是离线：
-   云同步 → 问我的用户名密码，执行 rsrs register --user <名> --pass <密码>，注册返回的【超级密码】必须展示给我、等我回复「已记好」才继续（丢了新设备解不开记忆），再跑 rsrs keys-export 提醒备份；
-   离线 → 执行 rsrs keygen。
-4. 跑一次 rsrs remember 和 rsrs recall 验收，最后告诉我可跑 rsrs web 开本地图形界面。`,
-  },
-  en: {
-    title: 'No memories yet',
-    body: 'Obtain a validated private Respire build from the maintainer, then run rsrs web to open the local GUI.',
-    copy: 'Copy prompt',
-    copied: 'Copied',
-    dismiss: 'Dismiss',
-    prompt: `Install Respire for me (sole command rsrs, a cross-device memory system for my AI). Repositories and builds are currently private; do not assume a public npm package is available. Do everything automatically; do not stop to ask me along the way:
-
-1. Install an approved private build supplied by the maintainer, then run rsrs doctor to check dependencies.
-2. Run rsrs inject to inject memory into local AI tools (must happen before login/register).
-3. Ask whether I want cloud sync or offline:
-   Cloud sync → ask for my username and password, run rsrs register --user <name> --pass <password>. You MUST show me the returned [super password] and wait until I reply "saved" before continuing (losing it means new devices cannot unlock memories), then run rsrs keys-export and remind me to back it up;
-   Offline → run rsrs keygen.
-4. Run rsrs remember and rsrs recall once to verify, then tell me I can run rsrs web to open the local GUI.`,
-  },
-};
-
-function EmptyInstallHint({ notify }) {
-  const { locale } = useI18n();
-  const [lang, setLang] = useState(() => getLocale());
-  useEffect(() => setLang(locale), [locale]);
-  const [copied, setCopied] = useState(false);
-  const [open, setOpen] = useState(() => {
-    try { return sessionStorage.getItem('respire-empty-hint') !== 'dismissed'; } catch { return true; }
-  });
-  const copyTimer = useRef(null);
-  useEffect(() => () => clearTimeout(copyTimer.current), []);
-  if (!open) return null;
-  const hint = INSTALL_HINT[lang] || INSTALL_HINT.en;
-  const copyPrompt = async () => {
-    try {
-      await navigator.clipboard.writeText(hint.prompt);
-      setCopied(true);
-      notify(t('hintCopied'));
-      clearTimeout(copyTimer.current);
-      copyTimer.current = setTimeout(() => setCopied(false), 2500);
-    } catch {
-      notify(t('hintCopyBlocked'));
-    }
-  };
-  const dismiss = () => {
-    try { sessionStorage.setItem('respire-empty-hint', 'dismissed'); } catch { /* private mode */ }
-    setOpen(false);
-  };
-  return (
-    <aside className="install-hint" role="status">
-      <div className="install-hint-langs">
-        <button type="button" aria-pressed={lang === 'zh'} onClick={() => setLang('zh')}>中文</button>
-        <button type="button" aria-pressed={lang === 'en'} onClick={() => setLang('en')}>English</button>
-      </div>
-      <button type="button" className="icon-button install-hint-close" aria-label={hint.dismiss} onClick={dismiss}><X size={16} /></button>
-      <h3>{hint.title}</h3>
-      <p>{hint.body}</p>
-      <pre>{hint.prompt}</pre>
-      <div className="install-hint-actions">
-        <Button primary icon={copied ? Check : Copy} onClick={copyPrompt}>{copied ? hint.copied : hint.copy}</Button>
-      </div>
-    </aside>
-  );
+function EmptyInstallHint() {
+  return <Note icon={Terminal}><a href="https://github.com/risense-ai/respire-docs" target="_blank" rel="noreferrer">{t('docsHelp')}</a></Note>;
 }
-
 export function DashboardPages({
   page, memoryId, token, me, sessions, keys, notify, open, go, onReload, onToken, onLogout,
 }) {

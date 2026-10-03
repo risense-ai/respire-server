@@ -7,7 +7,7 @@ import {
 import { AdminPages } from './AdminPages.jsx';
 import { DashboardPages } from './DashboardPages.jsx';
 import { Modal, Badge, Avatar, LangSwitch, useI18n } from './ui.jsx';
-import { brandLogo, brandReverse } from './brand.js';
+import { Brand } from './Brand.jsx';
 import { api } from './api.js';
 import { parseRoute } from './hashRoute.js';
 import { t } from './i18n.js';
@@ -109,120 +109,64 @@ export function Shell({ admin, token, onLogout, onToken }) {
 
   return (
     <>
-      <div className="app-shell">
+      <a className="skip-link" href="#main-content">{t('mainNav')}</a>
+      <div className={`console-layout ${admin ? 'admin-console' : 'user-console'}`}>
         <button className={`mobile-scrim ${mobile ? 'show' : ''}`} aria-label={t('closeNav')} onClick={() => setMobile(false)} />
-        <aside className={`sidebar ${mobile ? 'open' : ''}`}>
-          <a className="brand" href={`#/${fallback}`}>
-            <img className="logo-light" src={brandLogo} alt="Respire" />
-            <img className="logo-dark" src={brandReverse} alt="Respire" />
-          </a>
-          <div className="workspace">
-            <Avatar name={me?.user || '1'} color="sand" />
-            <div>
-              <strong>{admin ? t('adminSpace') : t('userSpace', { user: me?.user || '' })}</strong>
-              <span>{admin ? t('adminRoleSide', { role: me?.role || '' }) : t('personalAccount')}</span>
-            </div>
+        <aside className={`console-sidebar ${mobile ? 'open' : ''}`}>
+          <div className="sidebar-heading"><Brand href={`#/${fallback}`} light /></div>
+          <div className="workspace-switch">
+            <Avatar name={me?.user || '?'} color="sand" />
+            <div><strong>{me?.user || t('account')}</strong><span>{admin ? t('adminRoleSide', { role: me?.role || '' }) : t('personalAccount')}</span></div>
             <Badge>{admin ? t('adminSide') : t('personal')}</Badge>
           </div>
-          <button className="side-search" onClick={() => setModal({
-            title: t('quickGo'),
-            icon: MagnifyingGlass,
-            body: (
-              <div className="quick-links">
-                {visibleNav.map(([id, labelKey, I]) => (
-                  <button key={id} type="button" onClick={() => { go(id); setModal(null); }}><I size={22} />{t(labelKey)}<ArrowUpRight size={18} /></button>
-                ))}
-              </div>
-            ),
-            submit: t('close'),
-          })}>
-            <MagnifyingGlass size={20} /><span>{t('quickGo')}</span><kbd>⌘ K</kbd>
-          </button>
           <div className="nav-label">{admin ? t('navLabelAdmin') : t('navLabelUser')}</div>
           <nav aria-label={t('mainNav')}>
             {visibleNav.map(([id, labelKey, I]) => (
-              <a key={id} href={`#/${id}`} className={page === id ? 'active' : ''} onClick={() => setMobile(false)}>
-                <I size={23} weight={page === id ? 'duotone' : 'regular'} />
-                <span>{t(labelKey)}</span>
+              <a key={id} href={`#/${id}`} className={page === id ? 'active' : ''} aria-current={page === id ? 'page' : undefined} onClick={() => setMobile(false)}>
+                <I size={19} weight="regular" /><span>{t(labelKey)}</span><CaretDown size={12} className="nav-arrow" />
               </a>
             ))}
           </nav>
           <div className="sidebar-bottom">
-            <div className="sidebar-trust">
-              <ShieldCheck size={24} />
-              <strong>{admin ? t('trustAdminTitle') : t('trustUserTitle')}</strong>
-              <p>{admin ? t('trustAdminBody') : t('trustUserBody')}</p>
-            </div>
-            <a className="help-link" href="https://github.com/risense-ai/respire-docs" target="_blank" rel="noreferrer">
-              <BookOpen size={20} />{t('docsHelp')}<ArrowUpRight size={17} />
-            </a>
+            <div className="sidebar-security"><ShieldCheck size={18} /><span>{admin ? t('trustAdminTitle') : t('trustUserTitle')}</span></div>
+            <a className="sidebar-link" href="https://github.com/risense-ai/respire-docs" target="_blank" rel="noreferrer"><BookOpen size={18} />{t('docsHelp')}<ArrowUpRight size={15} /></a>
+            <button className="sidebar-link" onClick={onLogout}><SignOut size={18} />{t('signOut')}</button>
           </div>
         </aside>
-        <div className="workspace-main">
-          <header className="topbar">
-            <button className="icon-button mobile-menu" aria-label={t('openNav')} onClick={() => setMobile(true)}><List size={24} /></button>
-            <div className="breadcrumbs">
-              <span>{admin ? t('crumbAdmin') : t('crumbDash')}</span>
-              <CaretDown size={14} className="crumb-arrow" />
-              <strong>{t(visibleNav.find((n) => n[0] === page)?.[1] || 'navMemories')}</strong>
-            </div>
+        <div className="console-body">
+          <header className="console-header">
+            <button className="icon-button mobile-menu" aria-label={t('openNav')} onClick={() => setMobile(true)}><List size={23} /></button>
+            <div className="breadcrumbs"><span>{admin ? t('crumbAdmin') : t('crumbDash')}</span><CaretDown size={13} className="crumb-arrow" /><strong>{t(visibleNav.find((n) => n[0] === page)?.[1] || 'navMemories')}</strong></div>
             <div className="top-actions">
               <LangSwitch />
-              <button className="icon-button elevated" aria-label={t('readingAppearance')} onClick={() => setModal({
-                title: t('readingAppearance'),
-                icon: TextAa,
+              <button className="icon-button" aria-label={t('readingAppearance')} onClick={() => setModal({
+                title: t('readingAppearance'), icon: TextAa,
                 fields: [
                   { name: 'font', label: t('fontSize'), value: font, options: [{ value: '舒适', label: t('fontComfort') }, { value: '更大', label: t('fontLarger') }] },
                   { name: 'theme', label: t('appearance'), value: theme, options: [{ value: 'light', label: t('themeLight') }, { value: 'dark', label: t('themeDark') }] },
-                ],
-                submit: t('applySettings'),
+                ], submit: t('applySettings'),
                 onSubmit: (v) => { setFont(v.font); setTheme(v.theme); notify(t('readingApplied')); },
-              })}><TextAa size={22} /></button>
-              <button className="icon-button elevated" aria-label={t('toggleTheme')} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
-                {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
-              </button>
-              <button className="profile-button" aria-label={t('accountMenu')} onClick={() => setModal({
+              })}><TextAa size={20} /></button>
+              <button className="icon-button" aria-label={t('toggleTheme')} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={19} /> : <Sun size={19} />}</button>
+              <button className="account-button" aria-label={t('accountMenu')} onClick={() => setModal({
                 title: me?.user || t('account'),
-                body: (
-                  <div className="quick-links">
-                    <button type="button" onClick={() => { go('security'); setModal(null); }}><ShieldCheck size={22} />{t('navSecurity')}<ArrowUpRight size={17} /></button>
-                    <button type="button" onClick={() => { setModal(null); onLogout(); }}><SignOut size={22} />{t('signOut')}</button>
-                  </div>
-                ),
+                body: <div className="quick-links"><button type="button" onClick={() => { go('security'); setModal(null); }}><ShieldCheck size={21} />{t('navSecurity')}<ArrowUpRight size={16} /></button><button type="button" onClick={() => { setModal(null); onLogout(); }}><SignOut size={21} />{t('signOut')}</button></div>,
                 submit: t('close'),
-              })}>
-                <Avatar name={me?.user || '1'} color="sand" />
-              </button>
+              })}><Avatar name={me?.user || '?'} color="sand" /></button>
             </div>
           </header>
-          <main className="page-content" id="main-content">
+          <main className={`console-main surface-${page}`} id="main-content" tabIndex={-1}>
             {admin ? (
               <AdminPages page={page} token={token} me={me} notify={notify} open={setModal} onReloadMe={load} />
             ) : (
-              <DashboardPages
-                page={page}
-                memoryId={route.memoryId}
-                token={token}
-                me={me}
-                sessions={sessions}
-                keys={keys}
-                notify={notify}
-                open={setModal}
-                go={go}
-                onReload={load}
-                onToken={onToken}
-                onLogout={onLogout}
-              />
+              <DashboardPages page={page} memoryId={route.memoryId} token={token} me={me} sessions={sessions} keys={keys} notify={notify} open={setModal} go={go} onReload={load} onToken={onToken} onLogout={onLogout} />
             )}
-            <footer className="app-footer">
-              <span>respire<span className="divider-text">/</span>{admin ? 'Administration' : 'Personal dashboard'}</span>
-              <span>{me?.user}</span>
-            </footer>
           </main>
+          <footer className="console-footer"><span>Respire <span>/</span> {admin ? t('crumbAdmin') : t('crumbDash')}</span><span>{me?.user}</span></footer>
         </div>
       </div>
       {modal && <Modal key={modal.title} config={modal} onClose={() => setModal(null)} />}
-      <div className={`toast ${toast ? 'visible' : ''}`} role="status"><CheckCircle size={22} weight="fill" />{toast}</div>
+      <div className={`toast ${toast ? 'visible' : ''}`} role="status"><CheckCircle size={19} />{toast}</div>
     </>
   );
 }

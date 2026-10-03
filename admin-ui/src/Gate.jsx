@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ArrowRight, ShieldCheck, LockKey, Key } from '@phosphor-icons/react';
 import { Button, Badge, Note, LangSwitch, useI18n } from './ui.jsx';
-import { brandLogo } from './brand.js';
+import { Brand } from './Brand.jsx';
 import { authPayload, generateSecretKey, wrapVaultV4 } from './crypto.js';
 import { api, writeSecret } from './api.js';
 import { t } from './i18n.js';
@@ -154,9 +154,9 @@ export function Gate({ admin, onEnter, notify }) {
   }
 
   return (
-    <div className="gate-page">
+    <div className={`gate-page ${admin ? 'admin-login' : 'user-login'}`}>
       <header>
-        <img src={brandLogo} alt="Respire" />
+        <Brand href="https://rsrs.rs" />
         <Badge>{admin ? t('badgeAdmin') : t('badgeUser')}</Badge>
         <LangSwitch />
       </header>
@@ -182,7 +182,7 @@ export function Gate({ admin, onEnter, notify }) {
               ))}
             </div>
           )}
-          {tab === 'register' && <div className="step-label">{step} / 2 · {[t('stepAccount'), t('stepSuper')][step - 1]}</div>}
+          {tab === 'register' && <div className="step-label">{Math.min(step, 2)} / 2 · {step === 1 ? t('stepAccount') : t('stepSuper')}</div>}
           <form onSubmit={submit}>
             {tab === 'register' && step === 3 && issued ? (
               <>
