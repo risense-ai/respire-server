@@ -84,11 +84,11 @@ export function Shell({ admin, token, onLogout, onToken }) {
       return;
     }
     const info = await api('/api/self', { token });
-    setMe(info);
     const [sess, k] = await Promise.all([
       api('/api/self/sessions', { token }),
       api('/api/self/keys', { token }),
     ]);
+    setMe({ ...info, email: k.email, totp: k.totp });
     setSessions(sess.sessions || []);
     setKeys(k);
   };

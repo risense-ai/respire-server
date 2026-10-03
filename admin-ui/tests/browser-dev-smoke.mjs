@@ -54,7 +54,7 @@ async function screenshot(name) {
   await page.screenshot({ path: resolve(output, `${name}.png`), fullPage: true, mask: [page.locator('input'), page.locator('textarea'), page.locator('code'), page.locator('pre'), page.locator('.demo-key'), page.locator('.setup-key'), page.locator('.verification-code'), page.locator('.secret-result')] });
 }
 async function navigate(id) {
-  await page.locator(`.console-sidebar a[href="#/${id}"]`).click();
+  await page.locator(`.console-sidebar nav a[href="#/${id}"]`).click();
   await page.locator(`.console-main.surface-${id}`).waitFor();
 }
 async function responseFor(path, action) {
@@ -182,7 +182,8 @@ try {
     assert.ok(fixture, 'Development verification mail fixture absent');
     await page.getByLabel(t('emailCode'), { exact: true }).fill(fixture.body.slice(5));
     await responseFor('/api/self/email/confirm', () => page.getByRole('button', { name: t('verifyAndBind'), exact: true }).click());
-    assert.equal((await call('/api/self', { token: userToken })).email, email);
+    assert.equal((await call('/api/self/keys', { token: userToken })).email, email);
+    await page.getByText(t('currentEmail', { email }), { exact: true }).waitFor();
   });
   await step('user-totp-confirm-login-challenge-and-disable', async () => {
     await page.locator('.security-tabs').getByRole('button', { name: t('twoFactor'), exact: true }).click();
@@ -191,6 +192,7 @@ try {
     totpSecret = await page.locator('.setup-key code').textContent();
     await page.getByLabel(t('verify'), { exact: true }).fill(totp(totpSecret));
     await responseFor('/api/self/totp/confirm', () => page.getByRole('button', { name: t('confirmOn'), exact: true }).click());
+    await page.locator('.security-overview h2').getByText(t('totpOnH2'), { exact: true }).waitFor();
     const auth = await authPayload(user, password);
     const challenge = await call('/login', { method: 'POST', body: { user, pass_hash: auth.pass_hash, device_name: 'browser-smoke-challenge' } });
     assert.equal(challenge.totp_required, true);
@@ -200,7 +202,8 @@ try {
     assert.ok(session.token);
     await page.getByLabel(t('verify'), { exact: true }).fill(totp(totpSecret));
     await responseFor('/api/self/totp/disable', () => page.locator('.key-actions').getByRole('button', { name: t('close'), exact: true }).click());
-    assert.equal((await call('/api/self', { token: userToken })).totp, false);
+    assert.equal((await call('/api/self/keys', { token: userToken })).totp, false);
+    await page.locator('.security-overview h2').getByText(t('totpOffH2'), { exact: true }).waitFor();
   });
   await step('user-password-change-and-session-relogin', async () => {
     await page.locator('.security-tabs').getByRole('button', { name: t('loginPassH3'), exact: true }).click();
