@@ -285,7 +285,8 @@ impl BlobRepo {
                       COUNT(*) FILTER (WHERE deleted = 0 AND disabled = 0),
                       COUNT(*) FILTER (WHERE deleted = 0 AND disabled <> 0),
                       COUNT(*) FILTER (WHERE deleted <> 0),
-                      (SELECT COUNT(*) FROM sessions),
+                      (SELECT COUNT(*) FROM sessions s JOIN users u ON u."user" = s."user"
+                       WHERE u.deleted = 0 AND u.disabled = 0),
                       (SELECT COUNT(*) FROM blobs WHERE deleted = 0)
                FROM users"#,
             &[],
