@@ -14,6 +14,8 @@ artifact=$(realpath "$5")
 [[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die 'Invalid Compose project'
 [[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && (( api_port <= 65535 )) || die 'Invalid API port'
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid server revision'
+database_user=${RESPIRE_DATABASE_USER:-respire}
+database_name=${RESPIRE_DATABASE_NAME:-respire}
 for required in .env .migration-verified compose.yaml; do
   [[ -f "$directory/$required" ]] || die "Missing prepared deployment prerequisite: $required"
 done
@@ -157,7 +159,7 @@ rm -f "$directory/api-deployment-incomplete"
 printf 'Previous API restored; web and database unchanged. Snapshot: %s\n' "$release"
 ROLLBACK_SCRIPT
 chmod 700 "$release/rollback-api.sh"
-"${current[@]}" exec -T db pg_dump -U respire -d respire -Fc > "$backup.partial"
+"${current[@]}" exec -T db pg_dump -U "$database_user" -d "$database_name" -Fc > "$backup.partial"
 [[ -s "$backup.partial" ]] || die 'Database dump is empty'
 "${current[@]}" exec -T db pg_restore --exit-on-error --file=/dev/null < "$backup.partial"
 mv "$backup.partial" "$backup"

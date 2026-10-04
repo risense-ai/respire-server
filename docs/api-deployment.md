@@ -55,6 +55,11 @@ executing a script from it. Checksums detect corruption, not a malicious publish
 Do not pass unreviewed host environment overrides: Compose gives shell variables
 precedence over env files. The script explicitly sets only the API image/bind/port;
 other exported Compose variables remain the operator's responsibility.
+For an existing database, pass its original `RESPIRE_DATABASE_USER` and
+`RESPIRE_DATABASE_NAME` to the operator script and supply the same values in the
+private Compose environment. The defaults are `respire` for a new installation;
+they are not a migration instruction. `DATABASE_URL` may explicitly retain the
+existing API connection URL. Never recreate or rename a database to fit a default.
 
 ## Deploy the API
 
