@@ -50,6 +50,7 @@ export function Shell({ admin, token, onLogout, onToken }) {
   const [sessions, setSessions] = useState([]);
   const [keys, setKeys] = useState(null);
   const timer = useRef(null);
+  const loadSequence = useRef(0);
 
   function go(p) {
     location.hash = `/${p}`;
@@ -78,8 +79,10 @@ export function Shell({ admin, token, onLogout, onToken }) {
   }, [theme, font, admin]);
 
   const load = async () => {
+    const sequence = ++loadSequence.current;
     if (admin) {
       const info = await api('/admin/me', { token });
+      if (sequence !== loadSequence.current) return;
       setMe(info);
       return;
     }
@@ -88,6 +91,7 @@ export function Shell({ admin, token, onLogout, onToken }) {
       api('/api/self/sessions', { token }),
       api('/api/self/keys', { token }),
     ]);
+    if (sequence !== loadSequence.current) return;
     setMe({ ...info, email: k.email, email_verified: k.email_verified, totp: k.totp });
     setSessions(sess.sessions || []);
     setKeys(k);

@@ -104,10 +104,10 @@ export function Security({ admin, token, me, notify, onReload, open, onLogout })
                 return;
               }
               await api('/api/self/email/confirm', { method: 'POST', token, body: { code: emailCode } });
+              await onReload?.();
               notify(t('emailBound'));
               setEmailSent(false);
               setEmailCode('');
-              onReload?.();
             } catch (err) {
               setError(err.message);
             } finally {
@@ -148,15 +148,21 @@ export function Security({ admin, token, me, notify, onReload, open, onLogout })
             <Button primary onClick={async () => {
               try {
                 await api(totpConfirm, { method: 'POST', token, body: { code: totpCode } });
+                await onReload?.();
                 notify(t('totpOnOk'));
-                onReload?.();
+                setError('');
+                setTotpSecret('');
+                setTotpCode('');
               } catch (err) { setError(err.message); }
             }}>{t('confirmOn')}</Button>
             <Button danger onClick={async () => {
               try {
                 await api(totpDisable, { method: 'POST', token, body: { code: totpCode } });
+                await onReload?.();
                 notify(t('totpOffOk'));
-                onReload?.();
+                setError('');
+                setTotpSecret('');
+                setTotpCode('');
               } catch (err) { setError(err.message); }
             }}>{t('close')}</Button>
           </div>

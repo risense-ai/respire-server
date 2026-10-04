@@ -220,6 +220,8 @@ try {
     await page.getByText(t('currentEmail', { email }), { exact: true }).waitFor();
     await page.locator('.security-tabs').getByRole('button', { name: t('overview'), exact: true }).click();
     await page.getByText(t('verified'), { exact: true }).waitFor();
+    await page.reload();
+    await page.getByText(t('verified'), { exact: true }).waitFor();
   });
   await step('user-totp-confirm-login-challenge-and-disable', async () => {
     await page.locator('.security-tabs').getByRole('button', { name: t('twoFactor'), exact: true }).click();
@@ -229,6 +231,13 @@ try {
     await page.getByLabel(t('verify'), { exact: true }).fill(totp(totpSecret));
     await responseFor('/api/self/totp/confirm', () => page.getByRole('button', { name: t('confirmOn'), exact: true }).click());
     await page.locator('.security-overview h2').getByText(t('totpOnH2'), { exact: true }).waitFor();
+    await page.locator('.security-tabs').getByRole('button', { name: t('overview'), exact: true }).click();
+    await page.locator('.settings-panel').getByText(t('totpOn'), { exact: true }).waitFor();
+    await page.reload();
+    await page.locator('.security-overview h2').getByText(t('totpOnH2'), { exact: true }).waitFor();
+    await page.getByText(t('verified'), { exact: true }).waitFor();
+    await page.locator('.settings-panel').getByText(t('totpOn'), { exact: true }).waitFor();
+    await page.locator('.security-tabs').getByRole('button', { name: t('twoFactor'), exact: true }).click();
     const auth = await authPayload(user, password);
     const challenge = await call('/login', { method: 'POST', body: { user, pass_hash: auth.pass_hash, device_name: 'browser-smoke-challenge' } });
     assert.equal(challenge.totp_required, true);
@@ -240,6 +249,9 @@ try {
     await responseFor('/api/self/totp/disable', () => page.locator('.key-actions').getByRole('button', { name: t('close'), exact: true }).click());
     assert.equal((await call('/api/self/keys', { token: userToken })).totp, false);
     await page.locator('.security-overview h2').getByText(t('totpOffH2'), { exact: true }).waitFor();
+    await page.reload();
+    await page.locator('.settings-panel').getByText(t('totpOff'), { exact: true }).waitFor();
+    await page.getByText(t('verified'), { exact: true }).waitFor();
   });
   await step('user-password-change-and-session-relogin', async () => {
     await page.locator('.security-tabs').getByRole('button', { name: t('loginPassH3'), exact: true }).click();
