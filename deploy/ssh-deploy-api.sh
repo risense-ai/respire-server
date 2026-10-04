@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
-[[ $# == 3 ]] || die 'Usage: ssh-deploy-api.sh rehearsal|prod <40-character server SHA> <artifact directory>'
+[[ $# == 3 ]] || die 'Usage: ssh-deploy-api.sh dev|rehearsal|prod <40-character server SHA> <artifact directory>'
 target=$1
 revision=$2
 artifact=$(realpath "$3")
@@ -17,6 +17,7 @@ if [[ -n "${RESPIRE_API_DEPLOY_TEST_ROOT:-}" ]]; then
   [[ "$root" =~ ^/tmp/respire-api-test\.[^/]+$ ]] || die 'Unsafe test root'
 fi
 case "$target" in
+  dev) project=respire-dev; api_port=28789 ;;
   rehearsal) project=respire-rehearsal; api_port=27789 ;;
   prod) project=respire-prod; api_port=18789 ;;
   *) die 'Unsupported deployment target' ;;

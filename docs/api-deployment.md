@@ -25,11 +25,11 @@ mailbox-chain acceptance.
 
 ## Operator prerequisites
 
-- An existing installation at `/opt/respire-prod` or `/opt/respire-rehearsal`, with
+- An existing installation at `/opt/respire-dev`, `/opt/respire-prod` or `/opt/respire-rehearsal`, with
   `.env`, legacy `compose.yaml`, and the operator-created `.migration-verified`
   marker for a tested restore. This script cannot prepare an empty database.
 - The existing `db` service must already be running under the same Compose project
-  (`respire-prod` or `respire-rehearsal`). The script never starts or recreates it.
+  (`respire-dev`, `respire-prod` or `respire-rehearsal`). The script never starts or recreates it.
 - Bash, GNU coreutils, `flock`, `gzip`, `curl`, Docker, and Compose v2 with `--wait`,
   `--no-deps`, and `--pull never` support. No registry credentials are needed to load
   the archive. Disk space must cover a full database dump and loaded server image.
@@ -54,6 +54,7 @@ Inspect its files and execute in an operator SSH session:
 ```bash
 cd /path/to/extracted-artifact
 sha256sum -c SHA256SUMS
+bash ssh-deploy-api.sh dev <40-character-server-SHA> "$PWD"
 bash ssh-deploy-api.sh rehearsal <40-character-server-SHA> "$PWD"
 # After validating rehearsal, use the same reviewed artifact for prod:
 bash ssh-deploy-api.sh prod <40-character-server-SHA> "$PWD"
@@ -70,7 +71,9 @@ a frontend or proxy-provided version. Only `server` is stopped/recreated. `up` a
 uses `--no-deps --no-build --pull never ... server`.
 
 Compose health and a loopback `/ready` request must both succeed. Production stays
-on `127.0.0.1:18789`; rehearsal stays on `127.0.0.1:27789`. Only after success does
+on `127.0.0.1:18789`; rehearsal stays on `127.0.0.1:27789`; DEV stays on
+`127.0.0.1:28789` under its independent `respire-dev` Compose project and database.
+Only after success does
 the script install these dedicated managed files:
 
 - `compose-api.yaml`
