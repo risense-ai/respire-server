@@ -116,6 +116,10 @@ reset atomically consumes the code, changes only the login credentials, and revo
 existing sessions and pending login tickets. Memory ciphertext, vault keys and TOTP
 enrollment remain unchanged. Sign in again with the new password.
 
+Frontend builds and browser/hosted acceptance belong to `respire-site`. CLI releases
+retain CLI/API validation and exact source-SHA gates without depending on frontend
+checkout, console/homepage SHAs or browser tests; see the coordinated
+[CLI cleanup](https://github.com/risense-ai/respire-cli/pull/19).
 Browser acceptance harnesses moved with their frontend to `respire-site`. The
 backend `scripts/read-dev-mail.py` helper remains available at its existing path
 for external mail-acceptance consumers. Run mailbox checks only with isolated

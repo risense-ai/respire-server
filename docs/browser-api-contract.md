@@ -134,30 +134,37 @@ The native CLI/runtime, desktop frontend and independent loopback read-only
 `access` API are separate and remain in place. No user profile/data files are
 removed by this source change.
 
-## External release acceptance dependency
+## Acceptance ownership and coordinated CLI cleanup
 
-The CLI repository's current `release.yml` `web-smoke` job checks out
-`respire-server` at `RESPIRE_DEV_CONSOLE_SHA`, runs `admin-ui`, and checks Server CI
-for that console revision. That remains usable with the retained historical
-pre-extraction console SHA during API-first staging. Do not change that pin to a
-new Server revision (which contains no frontend), or to a Site SHA without
-migrating the workflow's source repository, directory and CI gate together.
+Frontend build, browser and hosted acceptance for homepage, Dashboard and Admin
+belong to `risense-ai/respire-site`. The CLI remains a pure CLI release pipeline:
+it must not fetch frontend source from Server or Site, require console/homepage
+SHAs or frontend CI, or run browser smoke as a prerequisite for CLI publication.
+[CLI PR #19](https://github.com/risense-ai/respire-cli/pull/19) removes the legacy
+`release.yml` `web-smoke` job and its publication dependency. It preserves CLI
+build validation, CLI cloud sweeps, API acceptance and the exact CLI source CI
+gate. This is removal of a misplaced frontend dependency, not a Site-checkout
+adapter or a waiver of CLI/API release checks.
 
-The CLI `scripts/dev-api-coverage.json` also pins `server_source_sha`; its smoke
-runner checks that against `RESPIRE_DEV_SERVER_SHA`. Review and refresh that
-producer coverage contract when advancing the development API revision, before
-expecting API-first acceptance to pass. This is an explicit dependent change,
-not a reason to bypass the SHA check.
+The CLI `scripts/dev-api-coverage.json` still pins `server_source_sha`; its API
+smoke runner checks that against `RESPIRE_DEV_SERVER_SHA`. Review and refresh that
+API coverage contract when advancing the development API revision. Keep this
+exact API source gate; do not replace it with a frontend revision or bypass it.
+The API/mailbox acceptance helper also stays with CLI API acceptance.
 
-Before new Pages acceptance, update the CLI consumer to checkout the Site console
-and its producer-appropriate CI workflow, and run a split-origin browser harness.
-Track the API `RESPIRE_DEV_SERVER_SHA`, console `RESPIRE_DEV_CONSOLE_SHA`, and
-homepage `RESPIRE_DEV_SITE_SHA` independently; they need not be equal. The legacy
-harness expects its historical same-origin development routing and header
-provenance. Source fixture tests do not make that live harness Pages-ready.
-Keep old pins until the new acceptance consumer is reviewed and deployed; do not
-silently waive release gates or dispatch hosted/mailbox acceptance in this change.
+Site's separate hosted acceptance records and validates the API, console and
+homepage source revisions independently. It must verify the actual split-origin
+Dashboard/Admin login, TOTP and vault flows after the API's exact Pages-origin
+allowlist is deployed, before traffic migration. Normal fixture CI does not
+replace live-host deployment/rollback, Pages domain or mailbox-chain acceptance.
 
-`scripts/read-dev-mail.py` is intentionally retained for compatibility with
-backend/external acceptance commands. The Site console also carries its historical
-copy. Neither helper is run by normal PR checks.
+Review and land the coordinated Server, [Site PR #6](https://github.com/risense-ai/respire-site/pull/6)
+and CLI source changes independently of operational rollout. Follow the API →
+Pages → traffic sequence above; keep the old web runtime's immutable images and
+configuration until live acceptance and the rollback window have completed.
+No merge, deployment or hosted/mailbox acceptance is performed by editing these
+source or workflow definitions.
+
+`scripts/read-dev-mail.py` remains available for backend/external acceptance
+commands. The Site console also carries its historical copy. Neither helper is
+run by normal Server PR checks.

@@ -13,6 +13,16 @@ path changes DNS, nginx, certificates, the web Compose project, or web ports. De
 the Site-owned console separately only after its existing session and dashboard
 flows work against the new API. Keep the old web runtime until then.
 
+Frontend builds, browser tests and hosted acceptance are Site's responsibility.
+The coordinated [CLI cleanup](https://github.com/risense-ai/respire-cli/pull/19)
+removes frontend/browser dependencies from CLI publication; it does not make CLI
+fetch the Site frontend. CLI and Server API acceptance, including exact source-SHA
+gates and API mailbox checks, remain required. See the
+[acceptance ownership contract](browser-api-contract.md#acceptance-ownership-and-coordinated-cli-cleanup).
+Source merges are separate from live deployment and traffic migration. CI cannot
+replace the installation's live-host rollback rehearsal, Pages-domain checks or
+mailbox-chain acceptance.
+
 ## Operator prerequisites
 
 - An existing installation at `/opt/respire-prod` or `/opt/respire-rehearsal`, with
