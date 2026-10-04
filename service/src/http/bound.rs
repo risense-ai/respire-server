@@ -24,7 +24,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
-use super::{handle_full, public_route, BlobRepo};
+use super::{cors::Cors, handle_full, public_route, BlobRepo};
 
 const DEFAULT_MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_HEADER_TIMEOUT_MS: u64 = 10_000;
@@ -44,6 +44,7 @@ struct Limits {
 }
 
 struct App {
+    cors: Cors,
     db: SyncSender<DbJob>,
     limits: Limits,
 }
@@ -58,7 +59,8 @@ struct DbJob {
 }
 
 pub fn check_config() -> Result<()> {
-    Limits::from_env().map(|_| ())
+    Limits::from_env()?;
+    Cors::from_env().map(|_| ())
 }
 
 pub fn serve(bind: &str, repo: BlobRepo, admin_token: Option<&str>) -> Result<()> {
@@ -72,6 +74,7 @@ pub(crate) fn serve_with_ready(
     ready: Option<std::sync::mpsc::Sender<String>>,
 ) -> Result<()> {
     let limits = Limits::from_env()?;
+    let cors = Cors::from_env()?;
     // postgres::Client owns a blocking runtime: open it before entering Tokio.
     let workers=std::env::var("ONEMEMORY_DB_WORKERS").ok()
         .map(|v|v.parse::<usize>()).transpose()?.unwrap_or(4);
@@ -85,7 +88,7 @@ pub(crate) fn serve_with_ready(
         .enable_time()
         .build()
         .map_err(|e| anyhow::anyhow!("create HTTP runtime failed: {e}"))?;
-    runtime.block_on(serve_async(bind, repos, admin_token, limits, ready))
+    runtime.block_on(serve_async(bind, repos, admin_token, limits, cors, ready))
 }
 
 impl Limits {
@@ -121,6 +124,7 @@ async fn serve_async(
     repos: Vec<BlobRepo>,
     admin_token: Option<&str>,
     limits: Limits,
+    cors: Cors,
     ready: Option<std::sync::mpsc::Sender<String>>,
 ) -> Result<()> {
     let (db_tx, db_rx) = mpsc::sync_channel(limits.max_connections);
@@ -142,6 +146,7 @@ async fn serve_async(
         let _ = tx.send(local.to_string());
     }
     let app = Arc::new(App {
+        cors,
         db: db_tx,
         limits,
     });
@@ -149,7 +154,7 @@ async fn serve_async(
 
     println!("respire serve: http://{local} (ciphertext store + auth domain)");
     println!("register: POST /register {{user, pass_hash, salt}} -> token");
-    println!("html pages: nginx  /admin /dashboard /  — this process is the HTTP API");
+    println!("frontend assets: respire-site; this process serves only the HTTP API");
     if admin_token.is_some() {
         println!("super-admin: super_admins table + ONEMEMORY_ADMIN_TOKEN");
     } else {
@@ -273,6 +278,30 @@ async fn handle_request(
     peer: SocketAddr,
     permit: Arc<OwnedSemaphorePermit>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let origin = app.cors.allowed_origin(req.headers());
+    let preflight = req.method() == Method::OPTIONS;
+    let mut response = if preflight {
+        let status = app.cors.preflight_status(req.headers());
+        if status == 204 {
+            let mut response = Response::new(Full::new(Bytes::new()));
+            *response.status_mut() = StatusCode::NO_CONTENT;
+            response
+        } else {
+            json_status(status, "CORS preflight denied")
+        }
+    } else {
+        handle_api_request(req, app, peer, permit).await?
+    };
+    Cors::decorate(&mut response, origin, preflight);
+    Ok(response)
+}
+
+async fn handle_api_request(
+    req: Request<Incoming>,
+    app: Arc<App>,
+    peer: SocketAddr,
+    permit: Arc<OwnedSemaphorePermit>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let started = Instant::now();
     let method = method_name(req.method());
     let path_only = req.uri().path().to_owned();
@@ -360,22 +389,7 @@ async fn handle_request(
     };
 
     if let Some((status, reply)) = public_route(method, &path_only) {
-        let trimmed = reply.trim_start();
-        let content_type = if trimmed.to_ascii_lowercase().starts_with("<!doctype")
-            || trimmed.to_ascii_lowercase().starts_with("<html")
-        {
-            "text/html; charset=utf-8"
-        } else {
-            "application/json"
-        };
-        return Ok(build_response(status, reply, content_type));
-    }
-
-    // Site static assets (embedded at build from site/dist/client) — binary byte path
-    if method == "GET" {
-        if let Some((status, body, mime)) = super::site_asset(&path_only) {
-            return Ok(build_response_bytes(status, body, mime));
-        }
+        return Ok(build_response(status, reply, "application/json"));
     }
 
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -509,20 +523,11 @@ fn json_status(status: u16, error: &str) -> Response<Full<Bytes>> {
 }
 
 fn build_response(status: u16, body: String, content_type: &'static str) -> Response<Full<Bytes>> {
-    build_response_bytes(status, body.as_bytes(), content_type)
-}
-
-/// Byte response (site static assets — images and other binary must not go through String).
-fn build_response_bytes(
-    status: u16,
-    body: &[u8],
-    content_type: &'static str,
-) -> Response<Full<Bytes>> {
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     match Response::builder()
         .status(code)
         .header(CONTENT_TYPE, content_type)
-        .body(Full::new(Bytes::copy_from_slice(body)))
+        .body(Full::new(Bytes::from(body)))
     {
         Ok(response) => response,
         Err(_) => {
@@ -596,3 +601,7 @@ fn env_positive_u64(name: &str, default: u64) -> Result<u64> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "bound_tests.rs"]
+mod tests;

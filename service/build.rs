@@ -1,23 +1,63 @@
-//! API binary does not embed the marketing site or admin SPA.
-//! Those are a separate nginx image (`deploy/web`). Keep an empty asset
-//! table so `site_asset` still compiles.
+//! Compile immutable API provenance. No frontend assets are generated or embedded.
 
-use std::env;
-use std::fs;
-use std::path::PathBuf;
+fn revision(value: Option<String>) -> Result<String, &'static str> {
+    let value = value.unwrap_or_else(|| "unknown".to_owned());
+    if value == "unknown"
+        || (value.len() == 40
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    {
+        Ok(value)
+    } else {
+        Err("RESPIRE_BUILD_REVISION must be a full lowercase Git SHA or unknown")
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    let out = match env::var("OUT_DIR") {
-        Ok(v) => PathBuf::from(v).join("site_assets.rs"),
-        Err(_) => {
-            eprintln!("build.rs: OUT_DIR is unset");
+    println!("cargo:rerun-if-env-changed=RESPIRE_BUILD_REVISION");
+    let setting = match std::env::var("RESPIRE_BUILD_REVISION") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!("RESPIRE_BUILD_REVISION must be valid UTF-8");
             std::process::exit(1);
         }
     };
-    let src = "pub static SITE_ASSETS: &[(&str, &str, &[u8])] = &[];\n";
-    if let Err(e) = fs::write(&out, src) {
-        eprintln!("build.rs: write {}: {e}", out.display());
-        std::process::exit(1);
+    match revision(setting) {
+        Ok(value) => println!("cargo:rustc-env=RESPIRE_COMPILED_REVISION={value}"),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::revision;
+    #[test]
+    fn unversioned_builds_are_explicitly_unknown() {
+        assert_eq!(revision(None), Ok("unknown".to_owned()));
+        assert_eq!(
+            revision(Some("unknown".to_owned())),
+            Ok("unknown".to_owned())
+        );
+    }
+    #[test]
+    fn only_complete_lowercase_revision_is_accepted() {
+        let sha = "84ad000ae50758756edb077c63c0a1b31eb9ada2";
+        assert_eq!(revision(Some(sha.to_owned())), Ok(sha.to_owned()));
+        for invalid in [
+            "",
+            "main",
+            "84ad000",
+            "84AD000AE50758756EDB077C63C0A1B31EB9ADA2",
+            "fffffffffffffffffffffffffffffffffffffff\n",
+            "gggggggggggggggggggggggggggggggggggggggg",
+        ] {
+            assert!(revision(Some(invalid.to_owned())).is_err());
+        }
     }
 }

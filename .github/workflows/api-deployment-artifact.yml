@@ -1,0 +1,57 @@
+name: API deployment artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: respire-api-deployment-artifact
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Require successful checks for this exact server revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for workflow in ci.yml server-image.yml; do
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow "$workflow" \
+              --commit "$GITHUB_SHA" --branch main --event push --limit 20 \
+              --json headSha,status,conclusion,createdAt | \
+              jq -e --arg sha "$GITHUB_SHA" \
+                '[.[] | select(.headSha == $sha)] | sort_by(.createdAt) | last |
+                 .status == "completed" and .conclusion == "success"' > /dev/null
+          done
+      - name: Test the operator deployment boundary
+        run: python3 -m unittest discover -s deploy/tests -v
+      - name: Build and package only the API
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          mkdir artifact
+          printf '%s\n' "$GITHUB_SHA" > artifact/server-sha.txt
+          docker build -f service/Dockerfile \
+            --build-arg "RESPIRE_BUILD_REVISION=$GITHUB_SHA" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "respire-server:$GITHUB_SHA" .
+          docker save "respire-server:$GITHUB_SHA" | gzip > artifact/server-image.tar.gz
+          cp compose.yaml artifact/compose-api.yaml
+          cp deploy/ssh-deploy-api.sh artifact/
+          (cd artifact && sha256sum server-image.tar.gz server-sha.txt compose-api.yaml ssh-deploy-api.sh > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-deployment-${{ github.sha }}
+          path: artifact/
+          retention-days: 7

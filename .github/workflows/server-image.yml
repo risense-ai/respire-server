@@ -104,7 +104,10 @@ jobs:
       - name: Build the image in Docker
         run: |
           set -euo pipefail
-          docker build -f service/Dockerfile -t "respire-server:ci-${GITHUB_RUN_ID}" -t "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" .
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          docker build -f service/Dockerfile --build-arg "RESPIRE_BUILD_REVISION=$GITHUB_SHA" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "respire-server:ci-${GITHUB_RUN_ID}" -t "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" .
 
       - name: Compose smoke checks for health and persistent storage
         env:
@@ -113,6 +116,7 @@ jobs:
           ONEMEMORY_HOST_PORT: "0"
           ONEMEMORY_ADMIN_TOKEN: ci-smoke-token-not-a-secret
           POSTGRES_PASSWORD: ci-smoke-pg
+          RESPIRE_CORS_ALLOWED_ORIGINS: https://dashboard.ci.invalid,https://admin.ci.invalid
         run: |
           set -euo pipefail
           COMPOSE=(docker compose --project-name "respire-ci-${GITHUB_RUN_ID}" -f compose.yaml)
@@ -135,7 +139,27 @@ jobs:
           "${COMPOSE[@]}" up -d --no-build
           BASE="http://$("${COMPOSE[@]}" port server 8787)"
           wait_health "/health did not become ready before the timeout"
-          curl -fsS "$BASE/health"
+          curl -fsS "$BASE/health" | python3 -c 'import json,os,sys; assert json.load(sys.stdin)["source_revision"] == os.environ["GITHUB_SHA"]'
+          # Check the real packaged API and Compose environment wiring before Pages.
+          for origin in https://dashboard.ci.invalid https://admin.ci.invalid; do
+            status=$(curl -sS -D /tmp/cors-headers -o /tmp/cors-body -w '%{http_code}' \
+              -X OPTIONS -H "Origin: $origin" \
+              -H 'Access-Control-Request-Method: POST' \
+              -H 'Access-Control-Request-Headers: authorization,content-type' "$BASE/login")
+            test "$status" = 204
+            tr -d '\r' < /tmp/cors-headers | grep -qi "^access-control-allow-origin: $origin$"
+            tr -d '\r' < /tmp/cors-headers | grep -qi '^vary: Origin$'
+            status=$(curl -sS -D /tmp/cors-headers -o /tmp/cors-body -w '%{http_code}' \
+              -H "Origin: $origin" "$BASE/api/self")
+            test "$status" = 401
+            tr -d '\r' < /tmp/cors-headers | grep -qi "^access-control-allow-origin: $origin$"
+            ! grep -qi '^access-control-allow-credentials:' /tmp/cors-headers
+          done
+          status=$(curl -sS -D /tmp/cors-headers -o /tmp/cors-body -w '%{http_code}' \
+            -X OPTIONS -H 'Origin: https://untrusted.ci.invalid' \
+            -H 'Access-Control-Request-Method: POST' "$BASE/login")
+          test "$status" = 403
+          ! grep -qi '^access-control-allow-origin:' /tmp/cors-headers
           python3 service/sync_probe.py --url "$BASE" --user sync-ci-probe
           "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qx '4'
           curl -fsS -H 'Content-Type: application/json' \

@@ -13,7 +13,6 @@ reviews:
     - '!**/target/**'
     - '!**/dist/**'
     - '!web-dist/**'
-    - '!service/src/http/admin.html'
   path_instructions:
     - path: '**/*.rs'
       instructions: >-

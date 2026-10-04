@@ -1,13 +1,9 @@
-//! Unauthenticated API: /health. Site and SPA are a separate nginx deploy.
+//! Unauthenticated API: /health. Frontend assets are owned by respire-site.
 
 use super::json::{json, page_path};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-mod site_assets {
-    include!(concat!(env!("OUT_DIR"), "/site_assets.rs"));
-}
-use site_assets::SITE_ASSETS;
+const SOURCE_REVISION: &str = env!("RESPIRE_COMPILED_REVISION");
 
 /// Unauthenticated, DB-free routes. HTML pages are not served here.
 pub(crate) fn public_route(method: &str, path: &str) -> Option<(u16, String)> {
@@ -15,18 +11,10 @@ pub(crate) fn public_route(method: &str, path: &str) -> Option<(u16, String)> {
     match (method, path) {
         ("GET", "/health") => Some(json(
             200,
-            serde_json::json!({"ok": true, "service": "respire", "version": VERSION}),
+            serde_json::json!({"ok": true, "service": "respire", "version": VERSION, "source_revision": SOURCE_REVISION}),
         )),
         _ => None,
     }
-}
-
-pub(crate) fn site_asset(path: &str) -> Option<(u16, &'static [u8], &'static str)> {
-    let p = page_path(path);
-    SITE_ASSETS
-        .iter()
-        .find(|(url, _, _)| *url == p)
-        .map(|(_, mime, body)| (200u16, *body, *mime))
 }
 
 pub(super) fn ready_version() -> &'static str {
@@ -45,6 +33,8 @@ mod tests {
         assert_eq!(status, 200);
         assert!(body.contains("respire"));
         assert!(body.contains("version"));
+        assert!(body.contains("source_revision"));
+        assert!(body.contains(SOURCE_REVISION));
     }
 
     #[test]

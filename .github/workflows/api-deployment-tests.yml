@@ -1,0 +1,22 @@
+name: API deployment safety tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deployment-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Check Bash syntax
+        run: bash -n deploy/ssh-deploy-api.sh
+      - name: Exercise API-only deployment and artifact gates without a daemon
+        run: python3 -m unittest discover -s deploy/tests -v

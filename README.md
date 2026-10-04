@@ -17,8 +17,7 @@ flowchart LR
 | Directory | Responsibility |
 |---|---|
 | `service/` | Rust API, authentication, ciphertext storage, OpenAPI contract and sync checks |
-| `admin-ui/` | React administrator console at `/admin` and user dashboard at `/dashboard` |
-| `deploy/` | Example reverse proxy, web image, Compose configuration and database backup script |
+| `deploy/` | API-only artifact deployment, legacy proxy reference and database backup tooling |
 | `sdk/`, `scripts/` | Pinned binary SDK metadata, checksum verification and runtime/notice staging |
 
 ## Build and test
@@ -35,32 +34,55 @@ cargo check --workspace --locked
 
 For PostgreSQL integration tests, set `DATABASE_URL` to an isolated test instance whose user can create databases. Existing tests create databases named `t<uuid>`. Enable the explicit test provider with `RESPIRE_CORE_TEST_MODE=1` and run `cargo test --locked -p respire_service -- --test-threads=1`. No model download is needed for these tests.
 
-Build the browser console with `cd admin-ui && npm ci && npm test && npm run build`. Hash routes include `/admin#/users` and `/dashboard#/memories`. Browser search filters decrypted title, body, type, project and tags by text; semantic retrieval belongs to Core in the native application.
+All frontend source, browser tests and builds live in [respire-site](https://github.com/risense-ai/respire-site): homepage, Dashboard and Admin. This repository contains API processes only. Cloud browser requests use the explicit HTTPS API base and bearer tokens; see the [producer browser contract](docs/browser-api-contract.md). Browser search filters decrypted text; semantic retrieval remains local to Core.
 
-## Production endpoints
+## Endpoint ownership and staged deployment
 
-| Host | Surface | Production upstream |
+| Host | Owner | Target surface |
 |---|---|---|
-| `https://rsrs.rs` | Website | Web image on `127.0.0.1:18089` |
-| `https://dash.rsrs.rs` | User dashboard | Web console; same-origin user API proxy |
-| `https://admin.rsrs.rs` | Administrator console | Web console; existing administrator authorization |
-| `https://api.rsrs.rs` | HTTP API | Server on `127.0.0.1:18789` |
+| `https://rsrs.rs` | `respire-site` | Homepage |
+| `https://dash.rsrs.rs` | `respire-site` | Dashboard Pages app |
+| `https://admin.rsrs.rs` | `respire-site` | Admin Pages app |
+| `https://api.rsrs.rs` | `respire-server` | Authentication, admin and ciphertext APIs |
 
-The dashboard hostname rejects `/admin` routes. Console API requests remain same-origin through nginx; API clients use `api.rsrs.rs`. Local development uses API port 8787 and web port 8087. Only an explicitly selected production deployment can synchronize the four-host nginx configuration. No DNS, certificate or deployment changes are made by editing these templates.
+These are the intended source/deployment boundaries, not proof of live DNS,
+proxy or account configuration. Deploy the API first, then Dashboard and Admin
+Pages, then migrate traffic. The old same-origin UI continues working during
+this sequence. The legacy `deploy/nginx-respire-envs.conf` is an operator reference,
+not a current-state inventory; verify actual upstream ports and routes before use.
 
-## Deployment
+Copy `.env.example` to `.env`, provide a random PostgreSQL password and select a
+validated API image. Set `RESPIRE_CORS_ALLOWED_ORIGINS` to the exact trusted browser
+origins before Pages acceptance. It is empty by default. Cloud CORS supports
+`GET`, `POST`, `Authorization` and `Content-Type`; it does not enable cookies or
+change bearer/role authorization. See [configuration and acceptance](docs/browser-api-contract.md).
 
-| Component | Configuration | Default local endpoint |
-|---|---|---|
-| API + database | `compose.yaml`, `.env.example` | `127.0.0.1:8787` |
-| Separate web console | `deploy/compose-web.yaml` | `127.0.0.1:8087` |
-| Test database | `compose.postgres.yml` | Explicit `POSTGRES_BIND` and port |
+Use the manual **API deployment artifact** workflow after Server CI and Server
+image succeed for the exact source revision. It packages only the API image and
+API deployment files. [API deployment and rollback](docs/api-deployment.md) preserve
+the existing PostgreSQL database and already-running legacy web containers,
+images, environment files and routes. Frontend source removal does not retire
+that runtime. Keep rollback images/configuration before migration; do not prune
+them until the verified cutover and rollback window have completed.
 
-Copy `.env.example` to `.env`, supply a random database password and select a validated image version. `service/Dockerfile` needs a validated Linux GNU SDK, so its build fails clearly while that target is absent from the lock. SDK runtime libraries and third-party notices are staged with the executable.
+`deploy/backup-prod.sh` takes and verifies PostgreSQL dumps, retaining seven
+backups. Configure paths for the installation. Never use `docker compose down -v`
+on a database that must be preserved. Builds still need the checksum-pinned Core
+SDK; Node remains a backend build dependency for SDK download/staging.
 
-Run the manual `Deployment artifact` workflow after CI succeeds for the exact server and website revisions. Download its image archive, Compose files, deployment script and checksums, then use an operator SSH session to deploy the verified artifact with `deploy/ssh-deploy.sh` to a prepared instance. Configure domains, certificate paths and environment directories for your installation. API and static web images deploy independently; `/admin/` JSON routes go to the API, while `/admin` and `/dashboard` serve the SPA.
+Deployment remains manual. After exact-revision CI and image smoke checks pass,
+a push to `main` publishes `<version>-dev.<run-id>`, `dev`, and an immutable
+source-SHA image. A matching `v<version>` tag publishes the stable version and
+`latest`. Manual image validation publishes only when `publish_image` is
+explicitly selected on a matching version tag. A PR does not deploy anything.
 
-`deploy/backup-prod.sh` takes and verifies a PostgreSQL dump, retaining seven backups. Configure its paths for your installation. Preserve the PostgreSQL volume during image upgrades; `docker compose down -v` deletes it. Deployment is manual. After the exact revision passes CI and image smoke checks, a push to `main` publishes a unique `<version>-dev.<run-id>` image and updates the `dev` channel. A `v<version>` tag matching `service/Cargo.toml` publishes the stable version and updates `latest`. Both also publish an immutable source-SHA tag. Manual image validation does not publish unless `publish_image` is explicitly selected on a matching version tag.
+## Retired legacy local console
+
+The historical `respire-server web` command and its private console API on port
+8788 are removed. The frontend lives on neither Server nor Pages. This does not
+remove any local profile, database or key file, the current native CLI/runtime or
+desktop UI, or the independent bearer-scoped `respire-server access` read-only API.
+Only homepage, Dashboard and Admin frontend source remain in `respire-site`.
 
 ## Transactional email
 
@@ -94,24 +116,19 @@ reset atomically consumes the code, changes only the login credentials, and revo
 existing sessions and pending login tickets. Memory ciphertext, vault keys and TOTP
 enrollment remain unchanged. Sign in again with the new password.
 
-The existing browser development smoke check now verifies actual mail receipt.
-Set `RESPIRE_DEV_MAIL_ADDRESS` to an isolated test mailbox and `RESPIRE_DEV_MAIL_READER`
-to a JSON command array (for example `["python3", "../scripts/read-dev-mail.py"]` when
-running from `admin-ui`). The included reader uses `RESPIRE_DEV_IMAP_HOST`,
-`RESPIRE_DEV_IMAP_USERNAME` and `RESPIRE_DEV_IMAP_PASSWORD` over TLS on port 993.
-The runner appends one JSON argument containing `recipient`, `requestedAt` and `purpose`.
-The reader must search that mailbox for the requested message after `requestedAt`
-and output `{"code":"123456"}`, or `{"code":null}` while waiting. Supply mailbox
-credentials through the reader's environment, never its arguments. Tests no longer
-retrieve codes from administrator APIs. Do not run concurrent smoke jobs against the same mailbox.
+Browser acceptance harnesses moved with their frontend to `respire-site`. The
+backend `scripts/read-dev-mail.py` helper remains available at its existing path
+for external mail-acceptance consumers. Run mailbox checks only with isolated
+test identities and an explicitly configured test mailbox. Unit/contract fixtures
+do not verify production SMTP delivery.
 
 ## Build dependencies
 
-The server pins the `respire_app` crate from `risense-ai/respire-cli`. Builds need access to that revision and a matching Core SDK. The web image uses `respire-site`. Keep dependency credentials out of images and Git. The memory CLI command is `rsrs`; the service executable is `respire-server`.
+The server pins the `respire_app` crate from `risense-ai/respire-cli`. Builds need access to that revision and a matching Core SDK. Keep dependency credentials out of images and Git. The memory CLI command is `rsrs`; the service executable is `respire-server`.
 
 ## Contributing
 
-Use English code comments and the UI translation catalog for visible text. Do not add Rust `.unwrap()` or `.expect()` calls. Keep `.env`, credentials, database dumps and SDK artifacts out of Git. CI retains PostgreSQL integration tests and the existing coverage gate; Core source credentials are not needed.
+Use English code comments. Frontend translation catalogs live in `respire-site`. Do not add Rust `.unwrap()` or `.expect()` calls. Keep `.env`, credentials, database dumps and SDK artifacts out of Git. CI retains PostgreSQL integration tests and the existing coverage gate; Core source credentials are not needed.
 
 ## License
 

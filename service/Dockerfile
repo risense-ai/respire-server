@@ -1,8 +1,11 @@
 # respire-server API image (linux/amd64).
 # Build context: repository root. docker build -f service/Dockerfile .
-# HTML (homepage + /admin + /dashboard) is a separate nginx image: deploy/web/Dockerfile.
+# Frontend source and publishing belong to risense-ai/respire-site.
 
 FROM rust:1.95.0-trixie AS builder
+# CI supplies an exact verified checkout SHA. Ad-hoc builds remain unknown.
+ARG RESPIRE_BUILD_REVISION=unknown
+ENV RESPIRE_BUILD_REVISION=$RESPIRE_BUILD_REVISION
 WORKDIR /src
 
 RUN apt-get update \

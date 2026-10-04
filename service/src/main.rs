@@ -1,7 +1,6 @@
-//! Respire server — cloud service and local console.
+//! Respire server — cloud API and independent loopback read-only tool API.
 //!
 //! serve: ciphertext-only HTTP store (auth domain + per-user vaults; server never sees plaintext).
-//! web: local console (browser talks to the local DB: browse/search/CRUD/sync/keys).
 //! The memory CLI does not own any of this.
 
 mod access;
@@ -9,15 +8,12 @@ mod http;
 mod mail;
 mod store;
 mod totp;
-mod web;
-
-use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "respire-server", version, about = "respire cloud service and local console")]
+#[command(name = "respire-server", version, about = "respire cloud API and read-only tool API")]
 struct ServerCli {
     #[command(subcommand)]
     command: Command,
@@ -39,23 +35,7 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:8787")]
         bind: String,
     },
-    /// Local console UI (browser page)
-    Web {
-        #[arg(long, default_value = "127.0.0.1:8788")]
-        bind: String,
-    },
-}
 
-fn db_path(name: &str) -> Result<PathBuf> {
-    // ONEMEMORY_DATA_DIR wins (isolated tests / multi-instance); default ~/.onememory
-    if let Ok(dir) = std::env::var("ONEMEMORY_DATA_DIR") {
-        let d = dir.trim();
-        if !d.is_empty() {
-            return Ok(PathBuf::from(d).join(name));
-        }
-    }
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("cannot determine home directory"))?;
-    Ok(home.join(".onememory").join(name))
 }
 
 fn main() -> Result<()> {
@@ -80,12 +60,24 @@ fn main() -> Result<()> {
             crate::http::serve(&bind, &url, admin.as_deref())?;
             Ok(())
         }
-        Command::Web { bind } => {
-            let session = respire::auth::try_session()?.ok_or_else(|| {
-                anyhow!("no local session — log in from the client, or run rsrs keygen")
-            })?;
-            crate::web::serve(&bind, &db_path("onememory.db")?, session)?;
-            Ok(())
-        }
+
+    }
+}
+
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[test]
+    fn retired_local_console_command_is_not_available() {
+        assert!(ServerCli::try_parse_from(["respire-server", "web"]).is_err());
+    }
+
+    #[test]
+    fn independent_readonly_tool_api_remains_available() -> Result<()> {
+        let cli = ServerCli::try_parse_from(["respire-server", "access"])?;
+        assert!(matches!(cli.command, Command::Access { bind } if bind == "127.0.0.1:8789"));
+        Ok(())
     }
 }

@@ -3,7 +3,7 @@ name = "respire_service"
 version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
-description = "respire cloud service — ciphertext store, auth domain, and local console"
+description = "respire cloud service — ciphertext store, auth domain, and loopback APIs"
 license-file = "../LICENSE"
 repository = "https://github.com/risense-ai/respire-server"
 

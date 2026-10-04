@@ -4,7 +4,10 @@ info:
   version: 1.0.0
   description: >
     Ciphertext store plus auth. The server never decrypts payloads.
-    CLI and other clients talk to these paths. Admin UI routes are omitted.
+    CLI and other clients talk to these paths. This is a partial sync/self API
+    schema; Admin JSON routes are not yet fully described. Frontends are owned by
+    respire-site. See ../docs/browser-api-contract.md for the cross-origin
+    GET/POST + Authorization/Content-Type contract and staged rollout.
 servers:
   - url: https://api.rsrs.rs
     description: Assigned Respire API endpoint; configuration only, not proof of DNS or deployment.
@@ -13,10 +16,20 @@ servers:
 paths:
   /health:
     get:
-      summary: Liveness
+      summary: Liveness and immutable API source revision
       responses:
         "200":
-          description: Process is up
+          description: Process is up; source_revision is the compiled server SHA or unknown for unversioned builds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, service, version, source_revision]
+                properties:
+                  ok: { type: boolean }
+                  service: { type: string }
+                  version: { type: string }
+                  source_revision: { type: string, pattern: "^([0-9a-f]{40}|unknown)$" }
   /ready:
     get:
       summary: Database ready

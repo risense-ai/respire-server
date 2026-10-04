@@ -1,6 +1,0 @@
-services:
-  web:
-    image: ${ONEMEMORY_WEB_IMAGE:-respire-web:develop}
-    restart: unless-stopped
-    ports:
-      - "${ONEMEMORY_WEB_BIND:-127.0.0.1}:${ONEMEMORY_WEB_PORT:-8087}:80"

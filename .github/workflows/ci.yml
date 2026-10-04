@@ -9,44 +9,6 @@ on:
 permissions:
   contents: read
 jobs:
-  frontend:
-    name: Console build and browser rendering
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: admin-ui/package-lock.json
-      - name: Install, test and build real console
-        working-directory: admin-ui
-        run: |
-          npm ci --no-audit --no-fund
-          npm test
-          npm run build
-      - name: Install Chromium for isolated rendering
-        working-directory: admin-ui
-        run: npx playwright install --with-deps chromium
-      - name: Render actual desktop and mobile sign-in surfaces
-        working-directory: admin-ui
-        env:
-          RESPIRE_RENDER_OUTPUT: render-output
-        run: npm run test:render
-      - name: Record exact source and compiled HTML hash
-        run: |
-          mkdir -p console-artifact
-          cp admin-ui/dist/index.html console-artifact/console.html
-          cp -a admin-ui/render-output console-artifact/render-output
-          printf '%s\n' "$GITHUB_SHA" > console-artifact/server-sha.txt
-          (cd console-artifact && sha256sum console.html server-sha.txt > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
-        with:
-          name: console-${{ github.sha }}
-          path: console-artifact/
-          retention-days: 7
   check:
     name: cargo check
     runs-on: ubuntu-latest
@@ -63,6 +25,10 @@ jobs:
           node-version: '22'
       - name: Prepare pinned binary Core SDK
         run: node scripts/fetch-core-sdk.mjs x86_64-unknown-linux-gnu
+      - name: Validate immutable build provenance
+        run: |
+          rustc --edition 2021 --test service/build.rs -o "$RUNNER_TEMP/respire-build-tests"
+          "$RUNNER_TEMP/respire-build-tests"
       - name: cargo check
         run: cargo check --workspace --locked
       - name: OpenAPI contract present
@@ -110,4 +76,4 @@ jobs:
       - name: line coverage ≥ 90% (http/store/totp)
         run: |
           cargo llvm-cov --locked -p respire_service --fail-under-lines 90 \
-            --ignore-filename-regex '(bound\.rs|web\.rs|access\.rs|main\.rs|mail\.rs|admin\.html)'
+            --ignore-filename-regex '(bound\.rs|access\.rs|main\.rs|mail\.rs)'

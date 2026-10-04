@@ -1,8 +1,8 @@
-//! Cloud HTTP: transport, public pages, and API route modules.
+//! Cloud HTTP: transport and API route modules.
 //!
 //! Layers:
 //!   bound   — hyper/tokio accept loop
-//!   public  — /health (site and SPA are a separate nginx deploy)
+//!   public  — /health (frontend assets belong to respire-site)
 //!   auth    — register/login/forgot/reset
 //!   admin   — /admin/*
 //!   self_api— /api/self/*
@@ -12,6 +12,7 @@
 mod admin;
 mod auth;
 mod bound;
+mod cors;
 mod dto;
 mod json;
 mod public;
@@ -20,7 +21,7 @@ mod self_api;
 mod sync;
 
 pub(crate) use bound::{check_config, serve as serve_bound};
-pub(crate) use public::{public_route, site_asset};
+pub(crate) use public::public_route;
 pub(crate) use router::handle_full;
 pub(crate) use crate::store::BlobRepo;
 #[cfg(test)]
