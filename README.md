@@ -112,3 +112,10 @@ The server pins the `respire_app` crate from `risense-ai/respire-cli`. Builds ne
 ## Contributing
 
 Use English code comments and the UI translation catalog for visible text. Do not add Rust `.unwrap()` or `.expect()` calls. Keep `.env`, credentials, database dumps and SDK artifacts out of Git. CI retains PostgreSQL integration tests and the existing coverage gate; Core source credentials are not needed.
+
+## License
+
+First-party material is offered under [PolyForm Noncommercial 1.0.0](LICENSE).
+Personal noncommercial use and self-hosting are permitted; commercial use,
+including internal commercial deployment, requires a separate written license.
+See [commercial licensing and component exceptions](COMMERCIAL-LICENSE.md).

@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
 description = "respire cloud service — ciphertext store, auth domain, and local console"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/risense-ai/respire-server"
 
 [[bin]]
