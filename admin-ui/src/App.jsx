@@ -47,7 +47,8 @@ function Console({ admin }) {
     }
   }, [admin]);
   useEffect(() => {
-    onUnauthorized((apiPath) => {
+    onUnauthorized((apiPath, requestToken) => {
+      if (requestToken !== readToken(key)) return;
       if (admin && apiPath.startsWith('/admin') && !apiPath.startsWith('/admin/login')) setToken('');
       if (!admin && (apiPath.startsWith('/api/self') || apiPath === '/count' || apiPath === '/pull' || apiPath === '/login')) setToken('');
     });
@@ -59,8 +60,11 @@ function Console({ admin }) {
     }
     const probe = admin ? '/admin/me' : '/api/self';
     api(probe, { token })
-      .then(() => setChecked(true))
+      .then(() => {
+        if (readToken(key) === token) setChecked(true);
+      })
       .catch((err) => {
+        if (readToken(key) !== token) return;
         if (err.status === 401 || err.status === 403) setToken('');
         setChecked(true);
       });

@@ -8,7 +8,7 @@ import { AdminPages } from './AdminPages.jsx';
 import { DashboardPages } from './DashboardPages.jsx';
 import { Modal, Badge, Avatar, LangSwitch, useI18n } from './ui.jsx';
 import { Brand } from './Brand.jsx';
-import { api } from './api.js';
+import { ADMIN_KEY, USER_KEY, api, readToken } from './api.js';
 import { parseRoute } from './hashRoute.js';
 import { t } from './i18n.js';
 
@@ -50,7 +50,7 @@ export function Shell({ admin, token, onLogout, onToken }) {
   const [sessions, setSessions] = useState([]);
   const [keys, setKeys] = useState(null);
   const timer = useRef(null);
-  const loadSequence = useRef(0);
+  const loadQueue = useRef({ token, pending: Promise.resolve() });
 
   function go(p) {
     location.hash = `/${p}`;
@@ -78,26 +78,39 @@ export function Shell({ admin, token, onLogout, onToken }) {
     document.title = `${admin ? t('crumbAdmin') : t('crumbDash')} · respire`;
   }, [theme, font, admin]);
 
-  const load = async () => {
-    const sequence = ++loadSequence.current;
-    if (admin) {
-      const info = await api('/admin/me', { token });
-      if (sequence !== loadSequence.current) return;
-      setMe(info);
-      return;
+  const tokenKey = admin ? ADMIN_KEY : USER_KEY;
+  const load = () => {
+    if (loadQueue.current.token !== token) {
+      loadQueue.current = { token, pending: Promise.resolve() };
     }
-    const info = await api('/api/self', { token });
-    const [sess, k] = await Promise.all([
-      api('/api/self/sessions', { token }),
-      api('/api/self/keys', { token }),
-    ]);
-    if (sequence !== loadSequence.current) return;
-    setMe({ ...info, email: k.email, email_verified: k.email_verified, totp: k.totp });
-    setSessions(sess.sessions || []);
-    setKeys(k);
+    const refresh = async () => {
+      const requireCurrentSession = () => {
+        if (readToken(tokenKey) !== token) throw new Error('Session changed; refresh cancelled');
+      };
+      requireCurrentSession();
+      if (admin) {
+        const info = await api('/admin/me', { token });
+        requireCurrentSession();
+        setMe(info);
+        return;
+      }
+      const info = await api('/api/self', { token });
+      const [sess, k] = await Promise.all([
+        api('/api/self/sessions', { token }),
+        api('/api/self/keys', { token }),
+      ]);
+      requireCurrentSession();
+      setMe({ ...info, email: k.email, email_verified: k.email_verified, totp: k.totp });
+      setSessions(sess.sessions || []);
+      setKeys(k);
+    };
+    const pending = loadQueue.current.pending.then(refresh, refresh);
+    loadQueue.current.pending = pending;
+    return pending;
   };
   useEffect(() => {
     load().catch((e) => {
+      if (readToken(tokenKey) !== token) return;
       notify(e.message);
       if (e.status === 401 || e.status === 403) onLogout();
     });

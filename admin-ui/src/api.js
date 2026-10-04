@@ -31,13 +31,13 @@ export async function api(path, { method = 'GET', body, token } = {}) {
   } catch {
     json = { error: text };
   }
-  if (response.status === 401 && unauthorized) unauthorized(path);
+  if (response.status === 401 && unauthorized) unauthorized(path, token);
   if (
     response.status === 403
     && unauthorized
     && String(json.error || '').includes('admin token required')
   ) {
-    unauthorized(path);
+    unauthorized(path, token);
   }
   if (!response.ok) {
     const err = new Error(json.error || response.statusText || 'request failed');
