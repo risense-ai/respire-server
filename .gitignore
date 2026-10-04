@@ -1,0 +1,8 @@
+node_modules/
+target/
+.sdk/
+.qa/
+*.db
+# CI copies risense-ai/respire-site here for the image build; not source of truth.
+/homepage/
+/.site-src/

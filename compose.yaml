@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: respire
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: respire
+    volumes:
+      - respire-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U respire -d respire"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  server:
+    image: ${ONEMEMORY_SERVER_IMAGE:-ghcr.io/risense-ai/respire-server:1.0.0}
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${ONEMEMORY_HOST_BIND:-127.0.0.1}:${ONEMEMORY_HOST_PORT:-8787}:8787"
+    environment:
+      DATABASE_URL: postgres://respire:${POSTGRES_PASSWORD}@db:5432/respire
+      ONEMEMORY_ADMIN_TOKEN: ${ONEMEMORY_ADMIN_TOKEN:-}
+      RESPIRE_SMTP_HOST: ${RESPIRE_SMTP_HOST:-}
+      RESPIRE_SMTP_PORT: ${RESPIRE_SMTP_PORT:-587}
+      RESPIRE_SMTP_USERNAME: ${RESPIRE_SMTP_USERNAME:-}
+      RESPIRE_SMTP_PASSWORD: ${RESPIRE_SMTP_PASSWORD:-}
+      RESPIRE_MAIL_FROM: ${RESPIRE_MAIL_FROM:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  respire-pg:

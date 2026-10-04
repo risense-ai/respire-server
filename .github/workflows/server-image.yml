@@ -1,0 +1,226 @@
+# Server image pipeline.
+# Build, test and smoke checks run in isolated Docker containers on hosted runners.
+# Smoke checks use a separate Compose project and a dynamic port.
+name: Server image
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_image:
+        description: Publish the validated image to the private package registry
+        type: boolean
+        default: false
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  service-check:
+    name: service tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          clean: false
+      - name: Clean previous container build output
+        run: docker run --rm -v "$PWD":/w alpine:3.20 sh -c 'rm -rf /w/target /w/ci-out'
+      - name: Run service tests in isolated PostgreSQL and Rust containers
+        run: |
+          set -euo pipefail
+          NET="respire-ci-${GITHUB_RUN_ID}"
+          PG="respire-ci-pg-${GITHUB_RUN_ID}"
+          TST="respire-ci-test-${GITHUB_RUN_ID}"
+          docker network create "$NET"
+          docker run -d --name "$PG" --network "$NET" --network-alias pg \
+            -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=postgres \
+            postgres:16-bookworm
+          for _ in $(seq 1 30); do
+            docker exec "$PG" pg_isready -U postgres && break
+            sleep 1
+          done
+          docker run --rm --name "$TST" --network "$NET" \
+            -v "$PWD":/src:ro -w /src \
+            -e CARGO_TARGET_DIR=/tmp/target \
+            -e RESPIRE_CORE_TEST_MODE=1 -e RUST_TEST_THREADS=1 \
+            -e RESPIRE_CORE_SDK_DIR=/tmp/core-sdk \
+            -e DATABASE_URL=postgres://postgres@pg:5432/postgres \
+            -v respire-ci-cargo-registry:/usr/local/cargo/registry \
+            -v respire-ci-cargo-git:/usr/local/cargo/git \
+            rust:1.95.0-trixie \
+            bash -c 'set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq pkg-config libssl-dev nodejs >/dev/null
+              node scripts/fetch-core-sdk.mjs x86_64-unknown-linux-gnu
+              cargo test --locked -p respire_service -- --test-threads=4'
+      - name: Clean test containers
+        if: always()
+        run: |
+          docker rm -f "respire-ci-test-${GITHUB_RUN_ID}" || true
+          docker rm -f "respire-ci-pg-${GITHUB_RUN_ID}" || true
+          docker network rm "respire-ci-${GITHUB_RUN_ID}" || true
+
+  image:
+    name: docker image
+    needs: service-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          clean: false
+      - name: Clean previous container build output
+        run: docker run --rm -v "$PWD":/w alpine:3.20 sh -c 'rm -rf /w/target /w/ci-out'
+
+      - name: Read the service version
+        run: |
+          set -euo pipefail
+          SERVICE_VERSION="$(awk -F'"' '/^version/{print $2; exit}' service/Cargo.toml)"
+          echo "SERVICE_VERSION=${SERVICE_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Require a matching version tag for requested publication
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_image
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" != tag || "$REF_NAME" != "v${SERVICE_VERSION}" ]]; then
+            echo "::error::Select the v${SERVICE_VERSION} tag to publish; main builds do not publish."
+            exit 1
+          fi
+
+      - name: Build the image in Docker
+        run: |
+          set -euo pipefail
+          docker build -f service/Dockerfile -t "respire-server:ci-${GITHUB_RUN_ID}" -t "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" .
+
+      - name: Compose smoke checks for health and persistent storage
+        env:
+          ONEMEMORY_SERVER_IMAGE: respire-server:ci-${{ github.run_id }}
+          ONEMEMORY_HOST_BIND: 127.0.0.1
+          ONEMEMORY_HOST_PORT: "0"
+          ONEMEMORY_ADMIN_TOKEN: ci-smoke-token-not-a-secret
+          POSTGRES_PASSWORD: ci-smoke-pg
+        run: |
+          set -euo pipefail
+          COMPOSE=(docker compose --project-name "respire-ci-${GITHUB_RUN_ID}" -f compose.yaml)
+          cleanup() {
+            "${COMPOSE[@]}" down -v --remove-orphans || true
+          }
+          trap cleanup EXIT
+          wait_health() {
+            local msg="$1"
+            local ok=0
+            for _ in $(seq 1 30); do
+              if curl -fsS "$BASE/health" | grep -q '"ok"'; then
+                ok=1
+                break
+              fi
+              sleep 2
+            done
+            [ "${ok}" = "1" ] || { echo "::error::${msg}"; "${COMPOSE[@]}" logs; exit 1; }
+          }
+          "${COMPOSE[@]}" up -d --no-build
+          BASE="http://$("${COMPOSE[@]}" port server 8787)"
+          wait_health "/health did not become ready before the timeout"
+          curl -fsS "$BASE/health"
+          python3 service/sync_probe.py --url "$BASE" --user sync-ci-probe
+          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qx '4'
+          curl -fsS -H 'Content-Type: application/json' \
+            -d '{"user":"ci-smoke","pass_hash":"ab","salt":"cd"}' \
+            "$BASE/register"
+          "${COMPOSE[@]}" down --remove-orphans
+          "${COMPOSE[@]}" up -d --no-build
+          BASE="http://$("${COMPOSE[@]}" port server 8787)"
+          wait_health "/health failed after recreating the container"
+          login="$(curl -fsS -H 'Content-Type: application/json' \
+            -d '{"user":"ci-smoke","pass_hash":"ab"}' \
+            "$BASE/login")"
+          echo "${login}" | grep -q '"token"' || { echo "::error::named volume was unavailable after recreating the container: ${login}"; exit 1; }
+          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT COUNT(*) FROM users WHERE \"user\"='ci-smoke'" | grep -q 1
+
+      - name: Check that the tag matches the service version
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          case "${TAG}" in
+            "v${SERVICE_VERSION}") ;;
+            v*)
+              echo "::error::tag ${TAG} does not match service/Cargo.toml version ${SERVICE_VERSION} (expected v${SERVICE_VERSION})"
+              exit 1
+              ;;
+            *)
+              echo "::error::Publish only v-prefixed tags matching service/Cargo.toml"
+              exit 1
+              ;;
+          esac
+
+      - name: Require successful CI for the exact version before publication
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_image)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --event push --limit 20 --json status,conclusion)"
+            if jq -e 'any(.[]; .status == "completed" and .conclusion == "success")' <<<"$runs" >/dev/null; then
+              exit 0
+            fi
+            if jq -e 'length > 0 and all(.[]; .status == "completed")' <<<"$runs" >/dev/null; then
+              echo '::error::The exact source revision failed Server CI'
+              exit 1
+            fi
+            sleep 10
+          done
+          echo '::error::Timed out waiting for Server CI; image remains unpublished'
+          exit 1
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_image)
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the tested image to GHCR
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_image)
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            VERSION="$SERVICE_VERSION"
+            CHANNEL=latest
+          else
+            VERSION="${SERVICE_VERSION}-dev.${GITHUB_RUN_ID}"
+            CHANNEL=dev
+          fi
+          docker tag "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" \
+            "ghcr.io/risense-ai/respire-server:${VERSION}"
+          docker tag "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" \
+            "ghcr.io/risense-ai/respire-server:sha-${GITHUB_SHA}"
+          docker tag "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" \
+            "ghcr.io/risense-ai/respire-server:${CHANNEL}"
+          docker push "ghcr.io/risense-ai/respire-server:${VERSION}"
+          docker push "ghcr.io/risense-ai/respire-server:sha-${GITHUB_SHA}"
+          docker push "ghcr.io/risense-ai/respire-server:${CHANNEL}"
+
+      - name: Clean CI containers and temporary image tags
+        if: always()
+        env:
+          POSTGRES_PASSWORD: ci-smoke-pg
+        run: |
+          docker compose --project-name "respire-ci-${GITHUB_RUN_ID}" -f compose.yaml down -v --remove-orphans || true
+          docker rm -f "respire-ci-test-${GITHUB_RUN_ID}" || true
+          docker image rm "respire-server:ci-${GITHUB_RUN_ID}" "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" || true

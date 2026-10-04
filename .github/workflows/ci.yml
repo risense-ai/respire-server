@@ -1,0 +1,113 @@
+name: Server CI
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  frontend:
+    name: Console build and browser rendering
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: admin-ui/package-lock.json
+      - name: Install, test and build real console
+        working-directory: admin-ui
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
+      - name: Install Chromium for isolated rendering
+        working-directory: admin-ui
+        run: npx playwright install --with-deps chromium
+      - name: Render actual desktop and mobile sign-in surfaces
+        working-directory: admin-ui
+        env:
+          RESPIRE_RENDER_OUTPUT: render-output
+        run: npm run test:render
+      - name: Record exact source and compiled HTML hash
+        run: |
+          mkdir -p console-artifact
+          cp admin-ui/dist/index.html console-artifact/console.html
+          cp -a admin-ui/render-output console-artifact/render-output
+          printf '%s\n' "$GITHUB_SHA" > console-artifact/server-sha.txt
+          (cd console-artifact && sha256sum console.html server-sha.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-${{ github.sha }}
+          path: console-artifact/
+          retention-days: 7
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    env:
+      RESPIRE_CORE_TEST_MODE: '1'
+      RUST_TEST_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare pinned binary Core SDK
+        run: node scripts/fetch-core-sdk.mjs x86_64-unknown-linux-gnu
+      - name: cargo check
+        run: cargo check --workspace --locked
+      - name: OpenAPI contract present
+        run: test -s service/openapi.yaml
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RESPIRE_CORE_TEST_MODE: '1'
+      RUST_TEST_THREADS: '1'
+      DATABASE_URL: postgres://postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: llvm-tools-preview
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare pinned binary Core SDK
+        run: node scripts/fetch-core-sdk.mjs x86_64-unknown-linux-gnu
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: cargo test
+        run: cargo test --locked -p respire_service -- --test-threads=4
+      # SMTP delivery is a network adapter validated by the opt-in mailbox smoke.
+      # Keep the existing HTTP/store/TOTP coverage scope and threshold.
+      - name: line coverage ≥ 90% (http/store/totp)
+        run: |
+          cargo llvm-cov --locked -p respire_service --fail-under-lines 90 \
+            --ignore-filename-regex '(bound\.rs|web\.rs|access\.rs|main\.rs|mail\.rs|admin\.html)'

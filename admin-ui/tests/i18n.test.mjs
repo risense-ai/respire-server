@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { DEFAULT_LOCALE, getLocale, setLocale, t, missingLocaleKeys } from '../src/i18n.js';
+
+assert.equal(DEFAULT_LOCALE, 'en');
+assert.equal(getLocale(), 'en');
+assert.equal(t('login'), 'Sign in');
+assert.equal(t('badgeUser'), 'User console');
+assert.match(t('gateUserH1'), /Teach once/);
+assert.equal(t('purgePhrase'), 'PERMANENT DELETE');
+assert.equal(t('sessionsTitle'), 'Devices & sessions');
+assert.deepEqual(missingLocaleKeys(), []);
+setLocale('zh');
+assert.equal(getLocale(), 'zh');
+assert.equal(t('login'), '登录');
+assert.equal(t('badgeUser'), '用户控制台');
+assert.equal(t('nMemories', { n: 3 }), '3 条记忆');
+assert.equal(t('purgePhrase'), '彻底删除');
+setLocale('en');
+assert.equal(t('nMemories', { n: 3 }), '3 memories');
+assert.equal(t('login'), 'Sign in');
+assert.equal(t('deleteWord'), 'DELETE');
+console.log('i18n default en + zh toggle ok');

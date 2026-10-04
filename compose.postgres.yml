@@ -1,0 +1,37 @@
+# Isolated PostgreSQL 16 instance for local cargo tests.
+# The application stack in compose.yaml keeps its database on the Docker network.
+# Set POSTGRES_BIND=127.0.0.1 and a random POSTGRES_PASSWORD in .env.
+# Run: docker compose -f compose.postgres.yml up -d
+# Then set DATABASE_URL=postgres://respire:<password>@127.0.0.1:5432/postgres.
+# The test administrator can CREATE DATABASE t<uuid>; use an isolated instance.
+# A LAN binding is for private debugging only, not a public database endpoint.
+
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_BIND:?set POSTGRES_BIND to 127.0.0.1 or a LAN IP, never the public NIC}:${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: respire
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      TZ: Asia/Shanghai
+    volumes:
+      - respire-pg-dev:/var/lib/postgresql/data
+    shm_size: 128mb
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - listen_addresses=*
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U respire -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  respire-pg-dev:
