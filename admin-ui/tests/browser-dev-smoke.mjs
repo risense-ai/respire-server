@@ -218,6 +218,8 @@ try {
     await responseFor('/api/self/email/confirm', () => page.getByRole('button', { name: t('verifyAndBind'), exact: true }).click());
     assert.equal((await call('/api/self/keys', { token: userToken })).email, email);
     await page.getByText(t('currentEmail', { email }), { exact: true }).waitFor();
+    await page.locator('.security-tabs').getByRole('button', { name: t('overview'), exact: true }).click();
+    await page.getByText(t('verified'), { exact: true }).waitFor();
   });
   await step('user-totp-confirm-login-challenge-and-disable', async () => {
     await page.locator('.security-tabs').getByRole('button', { name: t('twoFactor'), exact: true }).click();
@@ -279,6 +281,8 @@ try {
     await page.locator('.console-main').waitFor();
     userToken = await page.evaluate(() => localStorage.getItem('onememory.userToken'));
     assert.deepEqual(await call('/api/self/vault', { token: userToken }), vault);
+    assert.equal((await call('/api/self/keys', { token: userToken })).email_verified, true);
+    await page.getByText(t('verified'), { exact: true }).waitFor();
     await screenshot('user-password-recovered');
   });
   await step('admin-fixture-owner-and-viewer-permissions', async () => {

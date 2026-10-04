@@ -88,7 +88,7 @@ export function Shell({ admin, token, onLogout, onToken }) {
       api('/api/self/sessions', { token }),
       api('/api/self/keys', { token }),
     ]);
-    setMe({ ...info, email: k.email, totp: k.totp });
+    setMe({ ...info, email: k.email, email_verified: k.email_verified, totp: k.totp });
     setSessions(sess.sessions || []);
     setKeys(k);
   };
