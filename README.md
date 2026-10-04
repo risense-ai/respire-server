@@ -48,8 +48,8 @@ All frontend source, browser tests and builds live in [respire-site](https://git
 These are the intended source/deployment boundaries, not proof of live DNS,
 proxy or account configuration. Deploy the API first, then Dashboard and Admin
 Pages, then migrate traffic. The old same-origin UI continues working during
-this sequence. The legacy `deploy/nginx-respire-envs.conf` is an operator reference,
-not a current-state inventory; verify actual upstream ports and routes before use.
+this sequence. `deploy/nginx-api.conf.example` is a generic template; substitute
+your own domain, certificate paths and upstream port in private host configuration.
 
 Copy `.env.example` to `.env`, provide a random PostgreSQL password and select a
 validated API image. Set `RESPIRE_CORS_ALLOWED_ORIGINS` to the exact trusted browser
@@ -65,12 +65,16 @@ images, environment files and routes. Frontend source removal does not retire
 that runtime. Keep rollback images/configuration before migration; do not prune
 them until the verified cutover and rollback window have completed.
 
-`deploy/backup-prod.sh` takes and verifies PostgreSQL dumps, retaining seven
-backups. Configure paths for the installation. Never use `docker compose down -v`
+`deploy/backup-database.sh` takes and verifies PostgreSQL dumps, retaining seven
+backups. Pass the installation directory, Compose project and backup directory
+explicitly. Never use `docker compose down -v`
 on a database that must be preserved. Builds still need the checksum-pinned Core
 SDK; Node remains a backend build dependency for SDK download/staging.
 
-Deployment remains manual. After exact-revision CI and image smoke checks pass,
+Database/API deployment uses SSH from the operator's own computer; GitHub runners
+only check and build code. Keep actual installation and secret configuration
+outside public source, CI logs and artifacts. Cloudflare Pages frontend deployment
+uses its separate GitHub integration. After exact-revision CI and image smoke checks pass,
 a push to `main` publishes `<version>-dev.<run-id>`, `dev`, and an immutable
 source-SHA image. A matching `v<version>` tag publishes the stable version and
 `latest`. Manual image validation publishes only when `publish_image` is

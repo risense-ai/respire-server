@@ -4,24 +4,16 @@ set -euo pipefail
 umask 077
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
-[[ $# == 3 ]] || die 'Usage: ssh-deploy-api.sh rehearsal|prod <40-character server SHA> <artifact directory>'
-target=$1
-revision=$2
-artifact=$(realpath "$3")
+[[ $# == 5 ]] || die 'Usage: ssh-deploy-api.sh <installation directory> <Compose project> <loopback API port> <40-character server SHA> <artifact directory>'
+[[ "$1" == /* && -d "$1" ]] || die 'Installation directory must be an existing absolute path'
+directory=$(realpath "$1")
+project=$2
+api_port=$3
+revision=$4
+artifact=$(realpath "$5")
+[[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die 'Invalid Compose project'
+[[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && (( api_port <= 65535 )) || die 'Invalid API port'
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid server revision'
-root=/opt
-# Hermetic tests may redirect /opt only into a deliberately named temporary root.
-if [[ -n "${RESPIRE_API_DEPLOY_TEST_ROOT:-}" ]]; then
-  [[ "${RESPIRE_API_DEPLOY_TEST_MODE:-}" == 1 ]] || die 'Test root requires explicit test mode'
-  root=$(realpath "$RESPIRE_API_DEPLOY_TEST_ROOT")
-  [[ "$root" =~ ^/tmp/respire-api-test\.[^/]+$ ]] || die 'Unsafe test root'
-fi
-case "$target" in
-  rehearsal) project=respire-rehearsal; api_port=27789 ;;
-  prod) project=respire-prod; api_port=18789 ;;
-  *) die 'Unsupported deployment target' ;;
-esac
-directory="$root/$project"
 for required in .env .migration-verified compose.yaml; do
   [[ -f "$directory/$required" ]] || die "Missing prepared deployment prerequisite: $required"
 done
@@ -37,8 +29,12 @@ flock -n 9 || die 'Another API deployment or rollback is in progress'
 unset ONEMEMORY_SERVER_IMAGE
 export ONEMEMORY_HOST_BIND=127.0.0.1 ONEMEMORY_HOST_PORT="$api_port"
 base=(docker compose --project-name "$project" --project-directory "$directory" --env-file "$directory/.env")
-mail_file="$root/respire-secrets/mxroute.env"
-if [[ -f "$mail_file" ]]; then base+=(--env-file "$mail_file"); fi
+mail_file=${RESPIRE_API_MAIL_ENV_FILE:-}
+if [[ -n "$mail_file" ]]; then
+  [[ "$mail_file" == /* && -f "$mail_file" ]] || die 'Mail env file must be an existing absolute path'
+  mail_file=$(realpath "$mail_file")
+  base+=(--env-file "$mail_file")
+fi
 if [[ -f "$directory/deployment.env" ]]; then base+=(--env-file "$directory/deployment.env"); fi
 previous_compose="$directory/compose.yaml"
 if [[ -f "$directory/compose-api.yaml" ]]; then previous_compose="$directory/compose-api.yaml"; fi
@@ -191,4 +187,4 @@ mv "$directory/current-api-revision.tmp" "$directory/current-api-revision"
 printf '%s\n' 'ready' > "$release/result.txt"
 rm -f "$directory/api-deployment-incomplete"
 finished=1
-printf 'Respire %s API %s ready on 127.0.0.1:%s; web unchanged. Snapshot: %s\n' "$target" "$revision" "$api_port" "$release"
+printf 'Respire API %s ready on 127.0.0.1:%s; web unchanged. Snapshot: %s\n' "$revision" "$api_port" "$release"

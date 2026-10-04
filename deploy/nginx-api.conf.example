@@ -1,0 +1,21 @@
+# Generic API-only example. Replace every placeholder in a private host config.
+# Deploy from the operator's computer over SSH; CI never installs this file.
+server {
+    listen 80;
+    server_name api.example.invalid;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name api.example.invalid;
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/key.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 64m;
+
+    location / {
+        proxy_pass http://127.0.0.1:49123;
+        include /path/to/respire-proxy.inc;
+    }
+}

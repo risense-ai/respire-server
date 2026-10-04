@@ -23,13 +23,23 @@ Source merges are separate from live deployment and traffic migration. CI cannot
 replace the installation's live-host rollback rehearsal, Pages-domain checks or
 mailbox-chain acceptance.
 
+## Deployment boundary
+
+Database and API deployment is manual SSH from the operator's own computer.
+GitHub CI checks and builds code; it never connects to an installation. Cloudflare
+Pages may deploy frontend source through its native GitHub integration separately.
+Keep actual hostnames, SSH targets, installation paths, Compose projects, ports,
+environment mappings and secret-file locations in private operator configuration,
+outside this repository and all CI logs/artifacts. The artifact contains only
+generic code and templates. Never upload deployment snapshots or database dumps.
+
 ## Operator prerequisites
 
-- An existing installation at `/opt/respire-prod` or `/opt/respire-rehearsal`, with
+- An existing installation at an operator-supplied absolute directory, with
   `.env`, legacy `compose.yaml`, and the operator-created `.migration-verified`
   marker for a tested restore. This script cannot prepare an empty database.
 - The existing `db` service must already be running under the same Compose project
-  (`respire-prod` or `respire-rehearsal`). The script never starts or recreates it.
+  supplied by the operator. The script never starts or recreates it.
 - Bash, GNU coreutils, `flock`, `gzip`, `curl`, Docker, and Compose v2 with `--wait`,
   `--no-deps`, and `--pull never` support. No registry credentials are needed to load
   the archive. Disk space must cover a full database dump and loaded server image.
@@ -49,14 +59,15 @@ other exported Compose variables remain the operator's responsibility.
 ## Deploy the API
 
 Download and extract `api-deployment-<server SHA>` from the successful manual run.
-Inspect its files and execute in an operator SSH session:
+Inspect its files, transfer them from your computer with SCP, and execute in an
+operator SSH session. The following variables must be supplied from private
+operator configuration; no environment-to-installation mapping is built in:
 
 ```bash
-cd /path/to/extracted-artifact
+cd "$ARTIFACT_DIRECTORY"
 sha256sum -c SHA256SUMS
-bash ssh-deploy-api.sh rehearsal <40-character-server-SHA> "$PWD"
-# After validating rehearsal, use the same reviewed artifact for prod:
-bash ssh-deploy-api.sh prod <40-character-server-SHA> "$PWD"
+bash ssh-deploy-api.sh "$INSTALLATION_DIRECTORY" "$COMPOSE_PROJECT" \
+  "$API_LOOPBACK_PORT" "$SERVER_SHA" "$PWD"
 ```
 
 The script verifies the complete manifest, revision, and API-only service list;
@@ -69,8 +80,8 @@ and pins its immutable image ID. The image compiles the same source SHA into
 a frontend or proxy-provided version. Only `server` is stopped/recreated. `up` always
 uses `--no-deps --no-build --pull never ... server`.
 
-Compose health and a loopback `/ready` request must both succeed. Production stays
-on `127.0.0.1:18789`; rehearsal stays on `127.0.0.1:27789`. Only after success does
+Compose health and a loopback `/ready` request must both succeed. The API remains
+on loopback at the explicitly supplied port. Only after success does
 the script install these dedicated managed files:
 
 - `compose-api.yaml`
@@ -79,7 +90,9 @@ the script install these dedicated managed files:
 
 The original `.env`, `deployment.env` (including web settings), `compose.yaml`,
 `compose-web.yaml`, `current-revision`, and `current-site-revision` remain unchanged.
-The existing optional `/opt/respire-secrets/mxroute.env` is read, never rewritten.
+An optional mail environment file may be supplied through
+`RESPIRE_API_MAIL_ENV_FILE`; it must be an existing absolute path and is read,
+never rewritten. An explicitly supplied missing file is an error.
 The `api-deployment.env` override is for the API project only; do not add it to a
 web deployment command. Make operator-managed API configuration changes in `.env`
 or the separately managed secret env, not in the generated image/port override.
@@ -113,7 +126,7 @@ After confirming schema compatibility, use the snapshot printed by the failed
 attempt:
 
 ```bash
-bash /opt/respire-prod/api-releases/<attempt>/rollback-api.sh --schema-compatible
+bash "$ATTEMPT_DIRECTORY/rollback-api.sh" --schema-compatible
 ```
 
 The generated script uses the saved image ID, Compose definition and env files;
@@ -137,8 +150,8 @@ python3 -m unittest discover -s deploy/tests -v
 ```
 
 Tests substitute recording Docker/curl executables and fake installation directories
-under `/tmp`; they never use a daemon, network, live database, or `/opt`. The test-root
-hook requires both explicit test mode and a `/tmp/respire-api-test.*` directory.
+under `/tmp`; they never use a daemon, network or live database. Tests pass their
+temporary installation, fixture project and port through the same public interface.
 CI-gate fixtures use local `jq` (included on GitHub runners) and skip explicitly
 if it is unavailable. The PR safety workflow runs these tests, and artifact creation
 runs them again.

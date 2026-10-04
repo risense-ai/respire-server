@@ -1,4 +1,4 @@
-"""Hermetic operator-script tests. No daemon, network, /opt, or real database."""
+"""Hermetic operator-script tests. No daemon, network, or real database."""
 import fcntl
 import gzip
 import hashlib
@@ -76,13 +76,13 @@ class DeployTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="respire-api-test.", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.directory = self.root / "respire-prod"
+        self.directory = self.root / "fixture-installation"
         self.directory.mkdir()
         self.legacy = {
             ".env": b"POSTGRES_PASSWORD=fixture-only\n",
             ".migration-verified": b"operator verified restored db\n",
             "compose.yaml": b"services:\n  db: {}\n  server: {}\n",
-            "deployment.env": b"ONEMEMORY_SERVER_IMAGE=respire-server:legacy\nONEMEMORY_WEB_IMAGE=respire-web:keep\nONEMEMORY_WEB_PORT=18089\n",
+            "deployment.env": b"ONEMEMORY_SERVER_IMAGE=respire-server:legacy\nONEMEMORY_WEB_IMAGE=respire-web:keep\nONEMEMORY_WEB_PORT=49124\n",
             "compose-web.yaml": b"services:\n  web:\n    image: respire-web:keep\n",
             "current-revision": b"legacy-combined-revision\n",
             "current-site-revision": b"legacy-site-revision\n",
@@ -103,7 +103,6 @@ class DeployTest(unittest.TestCase):
             (binary / name).chmod(0o700)
         self.log = self.root / "commands.jsonl"
         self.env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}",
-                        RESPIRE_API_DEPLOY_TEST_MODE="1", RESPIRE_API_DEPLOY_TEST_ROOT=str(self.root),
                         STUB_LOG=str(self.log), STUB_REVISION=REVISION,
                         ONEMEMORY_SERVER_IMAGE="host-environment-must-not-win",
                         ONEMEMORY_WEB_IMAGE="host-web-must-not-change")
@@ -113,7 +112,7 @@ class DeployTest(unittest.TestCase):
             f"{hashlib.sha256((self.artifact / name).read_bytes()).hexdigest()}  {name}\n" for name in PAYLOADS))
 
     def deploy(self, success=True, **extra):
-        result = subprocess.run(["bash", str(SCRIPT), "prod", self.env["STUB_REVISION"], str(self.artifact)],
+        result = subprocess.run(["bash", str(SCRIPT), str(self.directory), "fixture-api", extra.pop("API_PORT", "49123"), self.env["STUB_REVISION"], str(self.artifact)],
                                 env=dict(self.env, **extra), text=True, capture_output=True)
         if success:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -137,13 +136,13 @@ class DeployTest(unittest.TestCase):
         for command in self.commands():
             args = command["args"]
             if command["tool"] == "curl":
-                self.assertEqual(args[-1], "http://127.0.0.1:18789/ready")
+                self.assertEqual(args[-1], "http://127.0.0.1:49123/ready")
                 continue
             self.assertEqual(command["web"], "host-web-must-not-change")
             self.assertFalse(set(args) & {"down", "rm", "--remove-orphans", "prune", "web"})
-            self.assertNotIn("respire-prod-web", args)
+            self.assertNotIn("fixture-web", args)
             if args[0] == "compose":
-                self.assertEqual(args[args.index("--project-name") + 1], "respire-prod")
+                self.assertEqual(args[args.index("--project-name") + 1], "fixture-api")
                 self.assertEqual(args[args.index("--project-directory") + 1], str(self.directory))
                 if "up" in args:
                     self.assertEqual(args[-1], "server")
@@ -310,8 +309,8 @@ class DeployTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No previous server image", result.stderr)
 
-    def test_test_root_rejected_without_explicit_test_mode(self):
-        self.deploy(success=False, RESPIRE_API_DEPLOY_TEST_MODE="0")
+    def test_invalid_port_rejected_before_docker_calls(self):
+        self.deploy(success=False, API_PORT="65536")
         self.assertEqual(self.commands(), [])
 
 
