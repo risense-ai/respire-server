@@ -87,12 +87,38 @@ admin and sync routes and their PostgreSQL tests.
 
 - GET `/api/self`, `/api/self/keys`, `/api/self/sessions`, `/api/self/vault`
 - GET `/pull` with optional `since` cursor
+- GET `/v2/capabilities`, `/api/self/memories` for bounded browser synchronization
 - POST `/push`, `/forget`: encrypted memory record or memory ID
 - POST `/api/self/sessions`, `/api/self/sessions/{id}/revoke`, `/api/self/rotate`
 - POST `/api/self/vault`, `/api/self/password`
 - POST `/api/self/email`, `/api/self/email/confirm`
 - POST `/api/self/totp/begin`, `/api/self/totp/confirm`, `/api/self/totp/disable`
 - POST `/api/self/purge`: existing explicit account confirmation
+
+### Paged browser memories
+
+Read the account `epoch` from `/v2/capabilities`. Request
+`/api/self/memories?epoch=<epoch>&after=0&snapshot=1` for an initial snapshot.
+The reply contains `epoch`, `until`, `cursor`, `has_more`, and `blobs`; each blob
+contains only `id`, `ciphertext`, `nonce`, `updated_at`, and `deleted`. Vectors
+and rejected operations are omitted. Pages contain at most 100 records and
+target 256 KiB of serialized blobs; one oversized record is returned alone.
+
+While `has_more` is true, send `cursor` as `after`, retaining the first page's
+`until` and snapshot mode. Immutable applied versions provide the latest value
+per ID at that fixed boundary, even during concurrent updates and deletions.
+After completion use `snapshot=0` and `after=<cursor>` without `until` to start
+an incremental round. Follow the same paging rules; tombstones remove cached
+records. Never mix these account revision cursors with legacy `/pull` cursors.
+
+Malformed numeric/mode parameters return `400`. A changed epoch or invalid
+persisted cursor returns `409` with `code: snapshot_required`; discard that
+account's cache and start one fresh snapshot. Authentication and read-only
+session checks remain unchanged. Cache scope includes API origin and the
+authenticated username; metadata validates epoch and vault identity. Persist
+ciphertext changes and their cursor atomically, including incomplete rounds'
+fixed boundaries. Keep keys and plaintext in memory. Deploy this API before
+the paired Site change; existing `/pull` and `/v2/*` payloads are unchanged.
 
 ## Administrator bearer and existing role checks
 

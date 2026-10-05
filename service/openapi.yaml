@@ -14,6 +14,43 @@ servers:
   - url: http://127.0.0.1:8787
     description: Local development server.
 paths:
+  /api/self/memories:
+    get:
+      summary: Bounded ciphertext snapshot or incremental browser page
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: epoch, in: query, required: true, schema: { type: string } }
+        - { name: after, in: query, required: true, schema: { type: integer, format: int64, minimum: 0 } }
+        - { name: until, in: query, schema: { type: integer, format: int64, minimum: 0 } }
+        - { name: snapshot, in: query, schema: { type: string, enum: ['0', '1'], default: '0' } }
+      responses:
+        "200":
+          description: At most 100 applied records, targeting 256 KiB; one oversized record is allowed. Retain until across pages.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [epoch, until, cursor, has_more, blobs]
+                properties:
+                  epoch: { type: string }
+                  until: { type: integer, format: int64 }
+                  cursor: { type: integer, format: int64 }
+                  has_more: { type: boolean }
+                  blobs:
+                    type: array
+                    maxItems: 100
+                    items:
+                      type: object
+                      required: [id, ciphertext, nonce, updated_at, deleted]
+                      properties:
+                        id: { type: string }
+                        ciphertext: { type: string }
+                        nonce: { type: string }
+                        updated_at: { type: string }
+                        deleted: { type: boolean }
+        "400": { description: Malformed cursor or mode }
+        "401": { description: Missing or invalid user bearer }
+        "409": { description: Epoch/cursor invalid; code snapshot_required requests a fresh snapshot }
   /health:
     get:
       summary: Liveness and immutable API source revision
