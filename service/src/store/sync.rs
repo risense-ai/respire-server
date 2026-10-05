@@ -417,6 +417,18 @@ impl BlobRepo {
         until: Option<i64>,
         snapshot: bool,
     ) -> Result<Page> {
+        self.sync_page_with_view(user, epoch, after, until, snapshot, false)
+    }
+
+    pub(crate) fn sync_page_with_view(
+        &self,
+        user: &str,
+        epoch: &str,
+        after: i64,
+        until: Option<i64>,
+        snapshot: bool,
+        browser: bool,
+    ) -> Result<Page> {
         self.sync_capabilities(user)?;
         let mut c = self.lock();
         let mut tx = c
@@ -437,13 +449,20 @@ impl BlobRepo {
         if after < 0 || high < after || high > current {
             bail!("invalid sync cursor");
         }
-        let rows=tx.query("SELECT v.* FROM sync_versions v WHERE v.\"user\"=$1 AND v.rev>$2 AND v.rev<=$3
+        let page_items = if browser { 100 } else { PAGE_ITEMS };
+        let page_bytes = if browser { 256 * 1024 } else { BATCH_BYTES };
+        let columns = if browser {
+            "v.id,v.rev,v.status,v.op_id,v.ciphertext,v.nonce,v.updated_at,v.deleted,''::text AS embedding_enc"
+        } else { "v.*" };
+        let sql = format!("SELECT {columns} FROM sync_versions v WHERE v.\"user\"=$1 AND v.rev>$2 AND v.rev<=$3
+            AND (NOT $6 OR v.status='applied')
             AND (NOT $4 OR v.status<>'applied' OR NOT EXISTS (
               SELECT 1 FROM sync_versions n WHERE n.\"user\"=v.\"user\" AND n.id=v.id AND n.status='applied' AND n.rev>v.rev AND n.rev<=$3))
-            ORDER BY v.rev LIMIT $5", &[&user,&after,&high,&snapshot,&((PAGE_ITEMS+1) as i64)])?;
+            ORDER BY v.rev LIMIT $5");
+        let rows = tx.query(&sql, &[&user, &after, &high, &snapshot, &((page_items + 1) as i64), &browser])?;
         let mut changes = Vec::new();
         let mut bytes = 0;
-        for r in rows.iter().take(PAGE_ITEMS) {
+        for r in rows.iter().take(page_items) {
             let change = Change {
                 rev: r.get("rev"),
                 status: r.get("status"),
@@ -451,7 +470,7 @@ impl BlobRepo {
                 blob: blob(r, user),
             };
             let size = serde_json::to_vec(&change)?.len();
-            if !changes.is_empty() && bytes + size > BATCH_BYTES {
+            if !changes.is_empty() && bytes + size > page_bytes {
                 break;
             }
             bytes += size;

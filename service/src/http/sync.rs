@@ -3,7 +3,7 @@
 use crate::store::{BlobRepo, BlobWrite};
 
 use super::dto::{push_item_error, BatchPushIn, ForgetIn, PushIn, MAX_PUSH_BATCH};
-use super::json::{json, query_param_u64, server_error};
+use super::json::{json, query_param, query_param_u64, server_error};
 
 pub(super) fn route(
     repo: &BlobRepo,
@@ -141,6 +141,31 @@ pub(super) fn route(
                 Ok(page) => json(200, serde_json::json!(page)),
                 Err(e) if e.is::<postgres::Error>() => server_error(e),
                 Err(e) => json(409, serde_json::json!({"error": e.to_string()})),
+            }
+        }
+        ("GET", "/api/self/memories") => {
+            let Some(epoch) = query_param(query, "epoch").filter(|v| !v.is_empty()) else {
+                return json(400, serde_json::json!({"error": "epoch required"}));
+            };
+            let Some(after) = query_param(query, "after").and_then(|v| v.parse::<i64>().ok()).filter(|v| *v >= 0) else {
+                return json(400, serde_json::json!({"error": "nonnegative after required"}));
+            };
+            let until = match query_param(query, "until") {
+                Some(v) => match v.parse::<i64>() {
+                    Ok(n) if n >= after => Some(n),
+                    _ => return json(400, serde_json::json!({"error": "bad until"})),
+                },
+                None => None,
+            };
+            let snapshot = match query_param(query, "snapshot") {
+                Some("1") => true,
+                None | Some("0") => false,
+                _ => return json(400, serde_json::json!({"error": "bad snapshot"})),
+            };
+            match repo.browser_page(user, epoch, after, until, snapshot) {
+                Ok(page) => json(200, page),
+                Err(e) if e.is::<postgres::Error>() => server_error(e),
+                Err(e) => json(409, serde_json::json!({"error": e.to_string(), "code": "snapshot_required"})),
             }
         }
         ("GET", "/pull") => {
