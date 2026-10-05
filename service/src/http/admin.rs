@@ -87,6 +87,22 @@ pub(super) fn route(
                 Err(e) => server_error(e),
             }
         }
+        ("GET", "stats") => {
+            if !can_write(role) {
+                return json(403, serde_json::json!({"error": "forbidden"}));
+            }
+            let days = match query_param(query, "days") {
+                None => 30,
+                Some(raw) => match raw.trim().parse::<u32>() {
+                    Ok(n) if (7..=90).contains(&n) => n,
+                    _ => return json(400, serde_json::json!({"error": "days must be an integer between 7 and 90"})),
+                },
+            };
+            match repo.daily_stats(days) {
+                Ok(series) => json(200, serde_json::json!({"days": days, "series": series})),
+                Err(e) => server_error(e),
+            }
+        }
         ("GET", "outbox") => {
             let page = query_param(query, "page").and_then(|s| s.parse().ok()).unwrap_or(1);
             match repo.list_outbox(page, 20) {

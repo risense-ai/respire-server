@@ -298,6 +298,56 @@ impl BlobRepo {
         }))
     }
 
+    /// Daily ops time series (registrations/memories/sessions), ascending, zero-filled,
+    /// with day boundaries at Asia/Shanghai (fixed UTC+8, no DST since 1991).
+    /// blobs carry no created_at, so new memories bucket on their LWW updated_at.
+    pub(crate) fn daily_stats(&self, days: u32) -> Result<Vec<serde_json::Value>> {
+        let today = (chrono::Utc::now() + chrono::Duration::hours(8)).date_naive();
+        self.daily_stats_until(days, today)
+    }
+
+    fn daily_stats_until(&self, days: u32, today: chrono::NaiveDate) -> Result<Vec<serde_json::Value>> {
+        let days = days.max(1);
+        let start = today - chrono::Duration::days(days as i64 - 1);
+        // Shanghai midnight of `start` is 16:00 UTC on the previous day.
+        let lower = format!("{}T16:00:00.000Z", (start - chrono::Duration::days(1)).format("%Y-%m-%d"));
+        // Param is declared text (::text::timestamptz) — the postgres crate cannot bind a String
+        // when inference would type $1 as timestamptz directly.
+        const USERS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', created_at::timestamptz AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
+               FROM users WHERE deleted = 0 AND created_at::timestamptz >= ($1::text)::timestamptz GROUP BY 1"#;
+        // '' is the schema default for updated_at; CASE keeps the cast away from such rows.
+        const BLOBS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', ts AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
+               FROM (SELECT CASE WHEN updated_at = '' THEN NULL ELSE updated_at::timestamptz END AS ts
+                     FROM blobs WHERE deleted = 0) b
+               WHERE ts >= ($1::text)::timestamptz GROUP BY 1"#;
+        const SESSIONS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', created_at::timestamptz AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
+               FROM sessions WHERE created_at::timestamptz >= ($1::text)::timestamptz GROUP BY 1"#;
+        let mut counts: std::collections::HashMap<String, [i64; 3]> = std::collections::HashMap::new();
+        {
+            let mut client = self.lock();
+            for (sql, idx) in [(USERS_BY_DAY, 0usize), (BLOBS_BY_DAY, 1), (SESSIONS_BY_DAY, 2)] {
+                for row in client.query(sql, &[&lower])? {
+                    let slot = counts.entry(row.get(0)).or_insert([0, 0, 0]);
+                    slot[idx] += row.get::<_, i64>(1);
+                }
+            }
+        }
+        let mut series = Vec::with_capacity(days as usize);
+        let mut date = start;
+        while date <= today {
+            let key = date.format("%Y-%m-%d").to_string();
+            let c = counts.get(&key).copied().unwrap_or([0, 0, 0]);
+            series.push(serde_json::json!({
+                "date": key,
+                "registrations": c[0],
+                "memories": c[1],
+                "sessions": c[2],
+            }));
+            date += chrono::Duration::days(1);
+        }
+        Ok(series)
+    }
+
     pub(crate) fn list_users_filtered(&self, q: &str, page: u32, limit: u32, status: &str) -> Result<(Vec<serde_json::Value>, i64)> {
         let limit = limit.clamp(1, 100) as i64;
         let page = page.max(1) as i64;
@@ -1934,6 +1984,57 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0]["device_name"], "laptop");
         assert!(repo.list_user_sessions("ghost").context("required")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn daily_stats_buckets_by_shanghai_day_and_zero_fills() -> Result<()> {
+        let repo = repo()?;
+        // UTC 15:59 = Shanghai 23:59 same day; UTC 16:30 = Shanghai 00:30 next day.
+        repo.lock().batch_execute(
+            "INSERT INTO users (\"user\", pass_hash, salt, token, created_at) VALUES
+                ('u-early','h','s','t1','2026-09-01T15:59:00.000Z'),
+                ('u-late','h','s','t2','2026-09-01T16:30:00.000Z');
+             INSERT INTO blobs (\"user\", id, updated_at) VALUES ('u-early','b1','2026-09-01T16:30:00.000Z');
+             INSERT INTO sessions (id, \"user\", token_hash, device_name, created_at)
+                VALUES ('s1','u-early','th1','d','2026-09-01T15:59:00.000Z');",
+        )?;
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).context("required")?;
+        let series = repo.daily_stats_until(7, today).context("required")?;
+        assert_eq!(series.len(), 7);
+        assert_eq!(series[0]["date"], "2026-08-27");
+        assert_eq!(series[5]["date"], "2026-09-01");
+        assert_eq!(series[6]["date"], "2026-09-02");
+        assert_eq!(series[5]["registrations"], 1);
+        assert_eq!(series[6]["registrations"], 1);
+        assert_eq!(series[6]["memories"], 1);
+        assert_eq!(series[5]["memories"], 0);
+        assert_eq!(series[5]["sessions"], 1);
+        assert_eq!(series[6]["sessions"], 0);
+        for p in &series[..5] {
+            assert_eq!(p["registrations"], 0);
+            assert_eq!(p["memories"], 0);
+            assert_eq!(p["sessions"], 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn daily_stats_excludes_deleted_users_and_blobs() -> Result<()> {
+        let repo = repo()?;
+        let (s, h) = hash("gone", "pass-1234")?;
+        repo.register("gone", &h, &s).context("required")?;
+        repo.put("gone", &mem("m1", "2026-09-02T00:00:00.000Z", "aa")).context("required")?;
+        repo.set_deleted("gone", true).context("required")?;
+        let mut tombstone = mem("m1", "2026-09-02T01:00:00.000Z", "aa");
+        tombstone.deleted = true;
+        repo.put("gone", &tombstone).context("required")?;
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 3).context("required")?;
+        let series = repo.daily_stats_until(7, today).context("required")?;
+        for p in &series {
+            assert_eq!(p["registrations"], 0);
+            assert_eq!(p["memories"], 0);
+        }
         Ok(())
     }
 }
