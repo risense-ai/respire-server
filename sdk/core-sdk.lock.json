@@ -2,11 +2,11 @@
   "schema_version": 1,
   "targets": {
     "x86_64-unknown-linux-gnu": {
-      "sdk_version": "1.0.0",
-      "manifest_sha256": "30192fd72604e51b9e0609944fd61c5585342b7943a1c4a9dc187e15c735c2b5",
-      "url": "https://github.com/risense-ai/respire-releases/releases/download/sdk-v1.0.0/respire-core-sdk-x86_64-unknown-linux-gnu.manifest.json",
-      "archive_url": "https://github.com/risense-ai/respire-releases/releases/download/sdk-v1.0.0/respire-core-sdk-x86_64-unknown-linux-gnu.tar.gz",
-      "archive_sha256": "15e77c11f18338409ff9ac9f70d3c7a5fc98a8a27abe8e94c6427b0e8f547d41",
+      "sdk_version": "1.0.2-dev.1",
+      "manifest_sha256": "803ed30eda26b768a59d5732b322798fec6a98376f8ed813abef28313d9d2acb",
+      "url": "https://github.com/risense-ai/respire-releases/releases/download/sdk-v1.0.2-dev.1/respire-core-sdk-x86_64-unknown-linux-gnu.manifest.json",
+      "archive_url": "https://github.com/risense-ai/respire-releases/releases/download/sdk-v1.0.2-dev.1/respire-core-sdk-x86_64-unknown-linux-gnu.tar.gz",
+      "archive_sha256": "f39a47fa429fafd0107fd9eeb029c3f7610d87b20f2b58ff3d593650debd7bc4",
       "redistribution": "approved"
     }
   }
