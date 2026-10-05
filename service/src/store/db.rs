@@ -836,19 +836,9 @@ impl BlobRepo {
         code: &str,
         device: Option<&str>,
     ) -> Result<Option<serde_json::Value>> {
-        let Some(user) = self.take_ticket(ticket.trim(), "user_totp")? else {
+        let Some(user) = self.verify_totp_ticket(ticket, code, "users", "user_totp")? else {
             return Ok(None);
         };
-        let secret: String = self
-            .lock()
-            .query_one(
-                r#"SELECT totp_secret FROM users WHERE "user"=$1 AND disabled=0 AND deleted=0"#,
-                &[&user],
-            )?
-            .get(0);
-        if !crate::totp::verify(&secret, code, chrono::Utc::now().timestamp()) {
-            return Ok(None);
-        }
         let token: String = self
             .lock()
             .query_one(r#"SELECT token FROM users WHERE "user"=$1"#, &[&user])?
@@ -857,22 +847,38 @@ impl BlobRepo {
     }
 
     pub(crate) fn complete_admin_totp(&self, ticket: &str, code: &str) -> Result<Option<serde_json::Value>> {
-        let Some(user) = self.take_ticket(ticket.trim(), "admin_totp")? else {
+        let Some(user) = self.verify_totp_ticket(ticket, code, "super_admins", "admin_totp")? else {
             return Ok(None);
         };
-        let secret: String = self
-            .lock()
-            .query_one(
-                r#"SELECT totp_secret FROM super_admins WHERE "user"=$1 AND disabled=0"#,
-                &[&user],
-            )?
-            .get(0);
-        if !crate::totp::verify(&secret, code, chrono::Utc::now().timestamp()) {
-            return Ok(None);
-        }
         let token = self.super_admin_issue_token(&user)?;
         self.audit("admin", "login_totp", &user, "")?;
         Ok(Some(serde_json::json!({"token": token, "user": user})))
+    }
+
+    fn verify_totp_ticket(&self, ticket: &str, code: &str, table: &str, purpose: &str) -> Result<Option<String>> {
+        if table != "users" && table != "super_admins" { anyhow::bail!("bad totp table"); }
+        let deleted = if table == "users" { " AND u.deleted=0" } else { "" };
+        let sql = format!(r#"SELECT v.audience,v.expires_at,u.totp_secret FROM verify_codes v JOIN {table} u ON u."user"=v.audience WHERE v.id=$1 AND v.purpose=$2 AND u.disabled=0{deleted} FOR UPDATE OF v,u"#);
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        let Some(row) = tx.query_opt(&sql, &[&ticket.trim(), &purpose])? else { return Ok(None); };
+        let user: String = row.get(0);
+        let expiry: String = row.get(1);
+        let secret: String = row.get(2);
+        if is_expired(&expiry) {
+            tx.execute("DELETE FROM verify_codes WHERE id=$1", &[&ticket.trim()])?;
+            tx.commit()?;
+            return Ok(None);
+        }
+        if !crate::totp::verify(&secret, code, chrono::Utc::now().timestamp()) {
+            tx.execute("UPDATE verify_codes SET failed_attempts=failed_attempts+1 WHERE id=$1", &[&ticket.trim()])?;
+            tx.execute("DELETE FROM verify_codes WHERE id=$1 AND failed_attempts>=5", &[&ticket.trim()])?;
+            tx.commit()?;
+            return Ok(None);
+        }
+        tx.execute("DELETE FROM verify_codes WHERE id=$1", &[&ticket.trim()])?;
+        tx.commit()?;
+        Ok(Some(user))
     }
 
     pub(crate) fn totp_begin(&self, user: &str, purpose: &str) -> Result<serde_json::Value> {
@@ -894,18 +900,18 @@ impl BlobRepo {
         if table != "users" && table != "super_admins" {
             anyhow::bail!("bad totp table");
         }
-        let row = self.lock().query_opt(
-            "SELECT id, code_hash, expires_at FROM verify_codes WHERE audience=$1 AND purpose=$2
-             ORDER BY expires_at DESC LIMIT 1",
+        let mut client = self.lock();
+        let mut transaction = client.transaction()?;
+        let row = transaction.query_opt(
+            "SELECT code_hash, expires_at FROM verify_codes WHERE audience=$1 AND purpose=$2
+             ORDER BY expires_at DESC LIMIT 1 FOR UPDATE",
             &[&user, &purpose],
         )?;
         let Some(row) = row else {
             return Ok(false);
         };
-        let id: String = row.get(0);
-        let secret: String = row.get(1);
-        let exp: String = row.get(2);
-        self.lock().execute("DELETE FROM verify_codes WHERE id=$1", &[&id])?;
+        let secret: String = row.get(0);
+        let exp: String = row.get(1);
         if is_expired(&exp) {
             return Ok(false);
         }
@@ -913,7 +919,9 @@ impl BlobRepo {
             return Ok(false);
         }
         let sql = format!(r#"UPDATE {table} SET totp_secret=$2 WHERE "user"=$1"#);
-        self.lock().execute(&sql, &[&user, &secret])?;
+        transaction.execute(&sql, &[&user, &secret])?;
+        transaction.execute("DELETE FROM verify_codes WHERE audience=$1 AND purpose=$2", &[&user, &purpose])?;
+        transaction.commit()?;
         Ok(true)
     }
 
@@ -921,8 +929,10 @@ impl BlobRepo {
         if table != "users" && table != "super_admins" {
             anyhow::bail!("bad totp table");
         }
-        let sql_sel = format!(r#"SELECT totp_secret FROM {table} WHERE "user"=$1"#);
-        let secret: String = self.lock().query_one(&sql_sel, &[&user])?.get(0);
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        let sql_sel = format!(r#"SELECT totp_secret FROM {table} WHERE "user"=$1 FOR UPDATE"#);
+        let secret: String = tx.query_one(&sql_sel, &[&user])?.get(0);
         if secret.is_empty() {
             return Ok(true);
         }
@@ -930,7 +940,10 @@ impl BlobRepo {
             return Ok(false);
         }
         let sql = format!(r#"UPDATE {table} SET totp_secret='' WHERE "user"=$1"#);
-        self.lock().execute(&sql, &[&user])?;
+        tx.execute(&sql, &[&user])?;
+        let purpose = if table == "users" { "user_totp_setup" } else { "admin_totp_setup" };
+        tx.execute("DELETE FROM verify_codes WHERE audience=$1 AND purpose=$2", &[&user, &purpose])?;
+        tx.commit()?;
         Ok(true)
     }
 

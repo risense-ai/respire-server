@@ -136,7 +136,7 @@ pub(super) fn route(
                     let _ = repo.audit(actor, "totp_on", actor, "");
                     json(200, serde_json::json!({"totp": true}))
                 }
-                Ok(false) => json(401, serde_json::json!({"error": "bad totp"})),
+                Ok(false) => json(400, serde_json::json!({"error": "bad totp"})),
                 Err(e) => server_error(e),
             }
         }
@@ -149,7 +149,7 @@ pub(super) fn route(
                     let _ = repo.audit(actor, "totp_off", actor, "");
                     json(200, serde_json::json!({"totp": false}))
                 }
-                Ok(false) => json(401, serde_json::json!({"error": "bad totp"})),
+                Ok(false) => json(400, serde_json::json!({"error": "bad totp"})),
                 Err(e) => server_error(e),
             }
         }

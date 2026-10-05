@@ -161,7 +161,8 @@ jobs:
           test "$status" = 403
           ! grep -qi '^access-control-allow-origin:' /tmp/cors-headers
           python3 service/sync_probe.py --url "$BASE" --user sync-ci-probe
-          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qx '4'
+          schema_version="$("${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'")"
+          test "$schema_version" = 5 || { echo "::error::expected cloud schema 5 after OAuth migration, got $schema_version"; exit 1; }
           curl -fsS -H 'Content-Type: application/json' \
             -d '{"user":"ci-smoke","pass_hash":"ab","salt":"cd"}' \
             "$BASE/register"

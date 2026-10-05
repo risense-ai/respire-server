@@ -1,6 +1,7 @@
 //! Persistence: Postgres schema, blob store, v2 sync, conflict resolutions.
 
 mod browser;
+mod device_auth;
 pub(crate) mod db;
 pub(crate) mod migrations;
 pub(crate) mod resolutions;

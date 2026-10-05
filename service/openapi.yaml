@@ -14,6 +14,107 @@ servers:
   - url: http://127.0.0.1:8787
     description: Local development server.
 paths:
+  /oauth/device/code:
+    post:
+      summary: Start OAuth device authorization for the public Respire CLI
+      description: RFC 8628 device grant. The dashboard origin comes from RESPIRE_DASHBOARD_URL, defaulting to https://dash.rsrs.rs. Development deployments must set their own dashboard origin.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: string, enum: [respire-cli] }
+                device_name: { type: string, maxLength: 128, default: CLI }
+                expected_user: { type: string, maxLength: 256 }
+      responses:
+        "200":
+          description: Ten-minute, single-use grant. Display and compare user_code before approving in the dashboard. Keep device_code private.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval]
+                properties:
+                  device_code: { type: string }
+                  user_code: { type: string, pattern: '^[A-F0-9]{12}$' }
+                  verification_uri: { type: string, format: uri }
+                  verification_uri_complete: { type: string, format: uri }
+                  expires_in: { type: integer, enum: [600] }
+                  interval: { type: integer, enum: [5] }
+        "400": { description: invalid_request or invalid_client }
+  /oauth/token:
+    post:
+      summary: Exchange an approved OAuth device grant once
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id, grant_type, device_code]
+              properties:
+                client_id: { type: string, enum: [respire-cli] }
+                grant_type: { type: string, enum: ['urn:ietf:params:oauth:grant-type:device_code'] }
+                device_code: { type: string }
+      responses:
+        "200":
+          description: Normal account session, revocable through the sessions API. No refresh token is issued. Never put access_token in a browser URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, user, session_id]
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  user: { type: string }
+                  session_id: { type: string }
+        "400": { description: authorization_pending, slow_down, access_denied, expired_token, invalid_grant, invalid_request, invalid_client or unsupported_grant_type. Increase the polling interval by five seconds for slow_down. }
+  /api/self/cli-authorization/{code}:
+    parameters:
+      - { name: code, in: path, required: true, schema: { type: string, pattern: '^[A-Fa-f0-9]{12}$' } }
+    get:
+      summary: Inspect a pending CLI authorization without exposing its private device code
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Device name, expected account, remaining expiry and state }
+        "404": { description: Grant expired or unavailable }
+    post:
+      summary: Explicitly approve or deny the CLI authorization as the signed-in account
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approve]
+              properties:
+                approve: { type: boolean }
+      responses:
+        "200": { description: Decision recorded; no super password is sent to the server }
+        "403": { description: Readonly sessions cannot authorize another session }
+        "409": { description: Grant expired, already decided or expected a different account }
+  /api/self/totp/disable:
+    post:
+      summary: Disable TOTP after verifying its current code, preserving existing sessions
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        "200": { description: TOTP disabled; existing login sessions remain valid }
+        "400": { description: Invalid TOTP code; binding and session remain intact }
+        "401": { description: Missing or invalid session token }
   /api/self/memories:
     get:
       summary: Bounded ciphertext snapshot or incremental browser page
