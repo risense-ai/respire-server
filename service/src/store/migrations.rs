@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use postgres::{Client, Transaction};
 
 /// Highest migration version this binary applies; databases above it are refused.
-pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 5;
+pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 6;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
@@ -41,6 +41,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "0004_sessions_readonly.sql",
         sql: include_str!("migrations/0004_sessions_readonly.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "0005_stats_created_at_indexes.sql",
+        sql: include_str!("migrations/0005_stats_created_at_indexes.sql"),
     },
 ];
 
@@ -289,7 +294,7 @@ mod tests {
         let repo = crate::store::connect_unique()?;
         {
             let mut client = repo.lock();
-            client.batch_execute("UPDATE schema_meta SET v='6' WHERE k='version'")?;
+            client.batch_execute("UPDATE schema_meta SET v='7' WHERE k='version'")?;
         }
         let error = match crate::store::BlobRepo::connect(&repo.url) {
             Err(e) => e.to_string(),
