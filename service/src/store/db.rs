@@ -311,17 +311,20 @@ impl BlobRepo {
         let start = today - chrono::Duration::days(days as i64 - 1);
         // Shanghai midnight of `start` is 16:00 UTC on the previous day.
         let lower = format!("{}T16:00:00.000Z", (start - chrono::Duration::days(1)).format("%Y-%m-%d"));
-        // Param is declared text (::text::timestamptz) — the postgres crate cannot bind a String
-        // when inference would type $1 as timestamptz directly.
+        // users/sessions created_at are always written by now_rfc() in uniform RFC3339
+        // UTC, so the range predicate compares text directly and uses idx_*_created_at;
+        // the timestamptz cast is only needed for day bucketing. An expression index on
+        // the cast is impossible (text::timestamptz is STABLE, indexes need IMMUTABLE).
         const USERS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', created_at::timestamptz AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
-               FROM users WHERE deleted = 0 AND created_at::timestamptz >= ($1::text)::timestamptz GROUP BY 1"#;
+               FROM users WHERE deleted = 0 AND created_at >= $1 GROUP BY 1"#;
         // '' is the schema default for updated_at; CASE keeps the cast away from such rows.
+        // blobs.updated_at comes from clients in arbitrary offsets, so its filter keeps the cast.
         const BLOBS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', ts AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
                FROM (SELECT CASE WHEN updated_at = '' THEN NULL ELSE updated_at::timestamptz END AS ts
                      FROM blobs WHERE deleted = 0) b
                WHERE ts >= ($1::text)::timestamptz GROUP BY 1"#;
         const SESSIONS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', created_at::timestamptz AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
-               FROM sessions WHERE created_at::timestamptz >= ($1::text)::timestamptz GROUP BY 1"#;
+               FROM sessions WHERE created_at >= $1 GROUP BY 1"#;
         let mut counts: std::collections::HashMap<String, [i64; 3]> = std::collections::HashMap::new();
         {
             let mut client = self.lock();
