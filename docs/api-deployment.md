@@ -108,6 +108,14 @@ For subsequent manual API inspection, use the same project, live env files and
 
 ## Failed or interrupted deployment
 
+CLI browser authorization adds the device-grant table in cloud schema 5. The
+schema migration is transactional and preserves existing account, vault and
+memory rows. A schema-4 server refuses to open schema 5, so switching its image
+back alone is insufficient. Rehearse the pre-upgrade database restore in an
+isolated database before rollout; do not use `--schema-compatible` to roll back
+to a schema-4 binary. Stop writes before a reviewed database restore and account
+for writes made after the backup.
+
 Each attempt creates a unique, private `api-releases/<SHA>-<timestamp>.<suffix>`
 directory and a correspondingly unique `backups/pre-api-<attempt>.dump` plus checksum.
 A retry never overwrites earlier rollback snapshots or backups. Snapshots include
