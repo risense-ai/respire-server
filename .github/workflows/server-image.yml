@@ -161,7 +161,10 @@ jobs:
           test "$status" = 403
           ! grep -qi '^access-control-allow-origin:' /tmp/cors-headers
           python3 service/sync_probe.py --url "$BASE" --user sync-ci-probe
-          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qx '4'
+          # Do not pin the schema version number here; /ready returning 200 already
+          # asserts it matches this binary's supported version (db.rs ready()).
+          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qE '^[0-9]+$'
+          curl -fsS "$BASE/ready" | grep -q '"ok"'
           curl -fsS -H 'Content-Type: application/json' \
             -d '{"user":"ci-smoke","pass_hash":"ab","salt":"cd"}' \
             "$BASE/register"
