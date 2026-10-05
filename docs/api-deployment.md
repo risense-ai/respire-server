@@ -40,6 +40,10 @@ generic code and templates. Never upload deployment snapshots or database dumps.
   marker for a tested restore. This script cannot prepare an empty database.
 - The existing `db` service must already be running under the same Compose project
   supplied by the operator. The script never starts or recreates it.
+- Configure `RESPIRE_DASHBOARD_URL` for the selected API in the private `.env` or
+  `deployment.env`: DEV requires `https://dash.dev.rsrs.rs`; production uses
+  `https://dash.rsrs.rs`. The production fallback is not a valid DEV setting.
+  After rollout, check the device-code verification origin before login acceptance.
 - Bash, GNU coreutils, `flock`, `gzip`, `curl`, Docker, and Compose v2 with `--wait`,
   `--no-deps`, and `--pull never` support. No registry credentials are needed to load
   the archive. Disk space must cover a full database dump and loaded server image.
