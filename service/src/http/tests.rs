@@ -3,6 +3,81 @@ use super::*;
 use anyhow::{anyhow, Context, Result};
 use respire::memory::crypto::{derive_auth_salt, derive_pass_hash};
 
+#[test]
+fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Result<()> {
+    let repo = repo()?;
+    let (token, _, _) = register_user(&repo, "browser-pages")?;
+    let epoch = repo.sync_capabilities("browser-pages")?.epoch;
+    let query = |after: i64, until: Option<i64>, snapshot: bool| {
+        let bound = until.map_or(String::new(), |n| format!("&until={n}"));
+        format!("/api/self/memories?epoch={epoch}&after={after}&snapshot={}{}", i32::from(snapshot), bound)
+    };
+    let read = |path: &str| -> Result<serde_json::Value> {
+        let (status, body) = handle(&repo, "GET", path, "", Some(&token));
+        assert_eq!(status, 200, "{body}");
+        Ok(serde_json::from_str(&body)?)
+    };
+    assert_eq!(handle(&repo, "GET", &query(0, None, true), "", None).0, 401);
+    let empty = read(&query(0, None, true))?;
+    assert_eq!(empty["blobs"], serde_json::json!([]));
+    assert_eq!(empty["cursor"], 0);
+    let items: Vec<_> = (0..102).map(|n| serde_json::json!({
+        "id": format!("page-{n}"), "ciphertext": format!("cipher-{n}"), "nonce": "nonce",
+        "embedding_enc": "vector-must-not-be-sent", "updated_at": "2026-10-05T00:00:00Z",
+        "deleted": false
+    })).collect();
+    let batch = serde_json::json!({"items": items}).to_string();
+    assert_eq!(handle(&repo, "POST", "/push/batch", &batch, Some(&token)).0, 200);
+    let first = read(&query(0, None, true))?;
+    let blobs = first["blobs"].as_array().context("page blobs")?;
+    assert_eq!(blobs.len(), 100);
+    assert_eq!(first["has_more"], true);
+    assert_eq!(first["cursor"], 100);
+    assert_eq!(first["until"], 102);
+    assert!(blobs.iter().all(|b| b.as_object().is_some_and(|o|
+        o.len() == 5 && !o.contains_key("embedding_enc") && !o.contains_key("user"))));
+
+    // Mutations between pages must not alter the immutable snapshot upper bound.
+    let edit = serde_json::json!({"id":"page-101", "ciphertext":"edited", "nonce":"nonce",
+        "updated_at":"2026-10-06T00:00:00Z", "deleted":false}).to_string();
+    assert_eq!(handle(&repo, "POST", "/push", &edit, Some(&token)).0, 200);
+    assert_eq!(handle(&repo, "POST", "/forget", r#"{"id":"page-0"}"#, Some(&token)).0, 200);
+    let stale = serde_json::json!({"id":"page-101", "ciphertext":"stale", "nonce":"nonce",
+        "updated_at":"2026-10-04T00:00:00Z", "deleted":false}).to_string();
+    assert_eq!(handle(&repo, "POST", "/push", &stale, Some(&token)).0, 200);
+    let last = read(&query(100, Some(102), true))?;
+    assert_eq!(last["blobs"].as_array().context("last blobs")?.len(), 2);
+    assert_eq!(last["blobs"][1]["ciphertext"], "cipher-101");
+    assert_eq!(last["cursor"], 102);
+    assert_eq!(last["has_more"], false);
+    let delta = read(&query(102, None, false))?;
+    let changes = delta["blobs"].as_array().context("delta blobs")?;
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0]["ciphertext"], "edited");
+    assert_eq!(changes[1]["id"], "page-0");
+    assert_eq!(changes[1]["deleted"], true);
+    assert_eq!(delta["cursor"], 105); // rejected revision omitted but consumed
+    assert_eq!(read(&query(105, None, false))?["blobs"], serde_json::json!([]));
+    let (other_token, _, _) = register_user(&repo, "browser-other")?;
+    let other_epoch = repo.sync_capabilities("browser-other")?.epoch;
+    let (status, other) = handle(&repo, "GET",
+        &format!("/api/self/memories?epoch={other_epoch}&after=0&snapshot=1"), "", Some(&other_token));
+    assert_eq!(status, 200);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&other)?["blobs"], serde_json::json!([]));
+    for suffix in ["", "?epoch=&after=0", "?epoch=any", "?epoch=any&after=-1",
+        "?epoch=any&after=x", "?epoch=any&after=2&until=1",
+        "?epoch=any&after=0&until=x", "?epoch=any&after=0&snapshot=2"] {
+        assert_eq!(handle(&repo, "GET", &format!("/api/self/memories{suffix}"), "", Some(&token)).0, 400);
+    }
+    for path in ["/api/self/memories?epoch=old&after=0".to_owned(), query(106, None, false),
+        query(0, Some(106), true)] {
+        let (status, body) = handle(&repo, "GET", &path, "", Some(&token));
+        assert_eq!(status, 409);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body)?["code"], "snapshot_required");
+    }
+    Ok(())
+}
+
     fn repo() -> Result<BlobRepo> {
         crate::store::connect_unique()
     }
