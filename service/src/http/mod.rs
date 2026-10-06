@@ -14,6 +14,7 @@ mod auth;
 mod bound;
 mod cors;
 mod dto;
+mod github;
 mod json;
 mod public;
 mod router;

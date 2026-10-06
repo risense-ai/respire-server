@@ -161,10 +161,12 @@ jobs:
           test "$status" = 403
           ! grep -qi '^access-control-allow-origin:' /tmp/cors-headers
           python3 service/sync_probe.py --url "$BASE" --user sync-ci-probe
-          # Do not pin the schema version number here; /ready returning 200 already
-          # asserts it matches this binary's supported version (db.rs ready()).
-          "${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'" | grep -qE '^[0-9]+$'
-          curl -fsS "$BASE/ready" | grep -q '"ok"'
+          schema_version="$("${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'")"
+          test "$schema_version" = 7 || { echo "::error::expected cloud schema 7 after operations stats migration, got $schema_version"; exit 1; }
+          github_tables="$("${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('github_identities','github_authorizations')")"
+          test "$github_tables" = 2 || { echo "::error::GitHub migration tables missing"; exit 1; }
+          stats_table="$("${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='ops_daily_stats'")"
+          test "$stats_table" = 1 || { echo "::error::operations stats migration missing"; exit 1; }
           curl -fsS -H 'Content-Type: application/json' \
             -d '{"user":"ci-smoke","pass_hash":"ab","salt":"cd"}' \
             "$BASE/register"

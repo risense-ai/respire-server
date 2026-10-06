@@ -183,6 +183,10 @@ impl BlobRepo {
         if disabled != 0 {
             return Err(anyhow!("disabled"));
         }
+        // Empty hashes mark provider-only accounts, never valid password credentials.
+        if stored_hash.is_empty() || pass_hash.is_empty() {
+            return Ok(None);
+        }
         if stored_hash == pass_hash {
             Ok(Some(token))
         } else {
@@ -298,43 +302,30 @@ impl BlobRepo {
         }))
     }
 
-    /// Daily ops time series (registrations/memories/sessions), ascending, zero-filled,
-    /// with day boundaries at Asia/Shanghai (fixed UTC+8, no DST since 1991).
-    /// blobs carry no created_at, so new memories bucket on their LWW updated_at.
-    pub(crate) fn daily_stats(&self, days: u32) -> Result<Vec<serde_json::Value>> {
+    /// Anonymous insert totals; old memory creation dates are unknown, not zero.
+    pub(crate) fn daily_stats(&self, days: u32) -> Result<serde_json::Value> {
         let today = (chrono::Utc::now() + chrono::Duration::hours(8)).date_naive();
         self.daily_stats_until(days, today)
     }
 
-    fn daily_stats_until(&self, days: u32, today: chrono::NaiveDate) -> Result<Vec<serde_json::Value>> {
+    fn daily_stats_until(&self, days: u32, today: chrono::NaiveDate) -> Result<serde_json::Value> {
         let days = days.max(1);
         let start = today - chrono::Duration::days(days as i64 - 1);
-        // Shanghai midnight of `start` is 16:00 UTC on the previous day.
-        let lower = format!("{}T16:00:00.000Z", (start - chrono::Duration::days(1)).format("%Y-%m-%d"));
-        // users/sessions created_at are always written by now_rfc() in uniform RFC3339
-        // UTC, so the range predicate compares text directly and uses idx_*_created_at;
-        // the timestamptz cast is only needed for day bucketing. An expression index on
-        // the cast is impossible (text::timestamptz is STABLE, indexes need IMMUTABLE).
-        const USERS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', created_at::timestamptz AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
-               FROM users WHERE deleted = 0 AND created_at >= $1 GROUP BY 1"#;
-        // '' is the schema default for updated_at; CASE keeps the cast away from such rows.
-        // blobs.updated_at comes from clients in arbitrary offsets, so its filter keeps the cast.
-        const BLOBS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', ts AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
-               FROM (SELECT CASE WHEN updated_at = '' THEN NULL ELSE updated_at::timestamptz END AS ts
-                     FROM blobs WHERE deleted = 0) b
-               WHERE ts >= ($1::text)::timestamptz GROUP BY 1"#;
-        const SESSIONS_BY_DAY: &str = r#"SELECT to_char(date_trunc('day', created_at::timestamptz AT TIME ZONE 'Asia/Shanghai'), 'YYYY-MM-DD') AS d, COUNT(*)
-               FROM sessions WHERE created_at >= $1 GROUP BY 1"#;
         let mut counts: std::collections::HashMap<String, [i64; 3]> = std::collections::HashMap::new();
-        {
+        let tracking_since = {
             let mut client = self.lock();
-            for (sql, idx) in [(USERS_BY_DAY, 0usize), (BLOBS_BY_DAY, 1), (SESSIONS_BY_DAY, 2)] {
-                for row in client.query(sql, &[&lower])? {
-                    let slot = counts.entry(row.get(0)).or_insert([0, 0, 0]);
-                    slot[idx] += row.get::<_, i64>(1);
-                }
+            for row in client.query(
+                "SELECT day::text, registrations, memories, sessions FROM ops_daily_stats
+                 WHERE day >= $1::text::date AND day <= $2::text::date ORDER BY day",
+                &[&start.to_string(), &today.to_string()],
+            )? {
+                counts.insert(row.get(0), [row.get(1), row.get(2), row.get(3)]);
             }
-        }
+            let timestamp: String = client.query_one(
+                "SELECT v FROM schema_meta WHERE k='ops_stats_started_at'", &[],
+            )?.get(0);
+            (chrono::DateTime::parse_from_rfc3339(&timestamp)? + chrono::Duration::hours(8)).date_naive()
+        };
         let mut series = Vec::with_capacity(days as usize);
         let mut date = start;
         while date <= today {
@@ -343,12 +334,15 @@ impl BlobRepo {
             series.push(serde_json::json!({
                 "date": key,
                 "registrations": c[0],
-                "memories": c[1],
+                "memories": if date < tracking_since { None } else { Some(c[1]) },
                 "sessions": c[2],
             }));
             date += chrono::Duration::days(1);
         }
-        Ok(series)
+        Ok(serde_json::json!({
+            "days": days, "timezone": "Asia/Shanghai", "memory_tracking_since": tracking_since.to_string(),
+            "historical_baseline": "retained_registrations_and_sessions", "series": series,
+        }))
     }
 
     pub(crate) fn list_users_filtered(&self, q: &str, page: u32, limit: u32, status: &str) -> Result<(Vec<serde_json::Value>, i64)> {
@@ -889,19 +883,9 @@ impl BlobRepo {
         code: &str,
         device: Option<&str>,
     ) -> Result<Option<serde_json::Value>> {
-        let Some(user) = self.take_ticket(ticket.trim(), "user_totp")? else {
+        let Some(user) = self.verify_totp_ticket(ticket, code, "users", "user_totp")? else {
             return Ok(None);
         };
-        let secret: String = self
-            .lock()
-            .query_one(
-                r#"SELECT totp_secret FROM users WHERE "user"=$1 AND disabled=0 AND deleted=0"#,
-                &[&user],
-            )?
-            .get(0);
-        if !crate::totp::verify(&secret, code, chrono::Utc::now().timestamp()) {
-            return Ok(None);
-        }
         let token: String = self
             .lock()
             .query_one(r#"SELECT token FROM users WHERE "user"=$1"#, &[&user])?
@@ -910,22 +894,38 @@ impl BlobRepo {
     }
 
     pub(crate) fn complete_admin_totp(&self, ticket: &str, code: &str) -> Result<Option<serde_json::Value>> {
-        let Some(user) = self.take_ticket(ticket.trim(), "admin_totp")? else {
+        let Some(user) = self.verify_totp_ticket(ticket, code, "super_admins", "admin_totp")? else {
             return Ok(None);
         };
-        let secret: String = self
-            .lock()
-            .query_one(
-                r#"SELECT totp_secret FROM super_admins WHERE "user"=$1 AND disabled=0"#,
-                &[&user],
-            )?
-            .get(0);
-        if !crate::totp::verify(&secret, code, chrono::Utc::now().timestamp()) {
-            return Ok(None);
-        }
         let token = self.super_admin_issue_token(&user)?;
         self.audit("admin", "login_totp", &user, "")?;
         Ok(Some(serde_json::json!({"token": token, "user": user})))
+    }
+
+    fn verify_totp_ticket(&self, ticket: &str, code: &str, table: &str, purpose: &str) -> Result<Option<String>> {
+        if table != "users" && table != "super_admins" { anyhow::bail!("bad totp table"); }
+        let deleted = if table == "users" { " AND u.deleted=0" } else { "" };
+        let sql = format!(r#"SELECT v.audience,v.expires_at,u.totp_secret FROM verify_codes v JOIN {table} u ON u."user"=v.audience WHERE v.id=$1 AND v.purpose=$2 AND u.disabled=0{deleted} FOR UPDATE OF v,u"#);
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        let Some(row) = tx.query_opt(&sql, &[&ticket.trim(), &purpose])? else { return Ok(None); };
+        let user: String = row.get(0);
+        let expiry: String = row.get(1);
+        let secret: String = row.get(2);
+        if is_expired(&expiry) {
+            tx.execute("DELETE FROM verify_codes WHERE id=$1", &[&ticket.trim()])?;
+            tx.commit()?;
+            return Ok(None);
+        }
+        if !crate::totp::verify(&secret, code, chrono::Utc::now().timestamp()) {
+            tx.execute("UPDATE verify_codes SET failed_attempts=failed_attempts+1 WHERE id=$1", &[&ticket.trim()])?;
+            tx.execute("DELETE FROM verify_codes WHERE id=$1 AND failed_attempts>=5", &[&ticket.trim()])?;
+            tx.commit()?;
+            return Ok(None);
+        }
+        tx.execute("DELETE FROM verify_codes WHERE id=$1", &[&ticket.trim()])?;
+        tx.commit()?;
+        Ok(Some(user))
     }
 
     pub(crate) fn totp_begin(&self, user: &str, purpose: &str) -> Result<serde_json::Value> {
@@ -947,18 +947,18 @@ impl BlobRepo {
         if table != "users" && table != "super_admins" {
             anyhow::bail!("bad totp table");
         }
-        let row = self.lock().query_opt(
-            "SELECT id, code_hash, expires_at FROM verify_codes WHERE audience=$1 AND purpose=$2
-             ORDER BY expires_at DESC LIMIT 1",
+        let mut client = self.lock();
+        let mut transaction = client.transaction()?;
+        let row = transaction.query_opt(
+            "SELECT code_hash, expires_at FROM verify_codes WHERE audience=$1 AND purpose=$2
+             ORDER BY expires_at DESC LIMIT 1 FOR UPDATE",
             &[&user, &purpose],
         )?;
         let Some(row) = row else {
             return Ok(false);
         };
-        let id: String = row.get(0);
-        let secret: String = row.get(1);
-        let exp: String = row.get(2);
-        self.lock().execute("DELETE FROM verify_codes WHERE id=$1", &[&id])?;
+        let secret: String = row.get(0);
+        let exp: String = row.get(1);
         if is_expired(&exp) {
             return Ok(false);
         }
@@ -966,7 +966,9 @@ impl BlobRepo {
             return Ok(false);
         }
         let sql = format!(r#"UPDATE {table} SET totp_secret=$2 WHERE "user"=$1"#);
-        self.lock().execute(&sql, &[&user, &secret])?;
+        transaction.execute(&sql, &[&user, &secret])?;
+        transaction.execute("DELETE FROM verify_codes WHERE audience=$1 AND purpose=$2", &[&user, &purpose])?;
+        transaction.commit()?;
         Ok(true)
     }
 
@@ -974,8 +976,10 @@ impl BlobRepo {
         if table != "users" && table != "super_admins" {
             anyhow::bail!("bad totp table");
         }
-        let sql_sel = format!(r#"SELECT totp_secret FROM {table} WHERE "user"=$1"#);
-        let secret: String = self.lock().query_one(&sql_sel, &[&user])?.get(0);
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        let sql_sel = format!(r#"SELECT totp_secret FROM {table} WHERE "user"=$1 FOR UPDATE"#);
+        let secret: String = tx.query_one(&sql_sel, &[&user])?.get(0);
         if secret.is_empty() {
             return Ok(true);
         }
@@ -983,7 +987,10 @@ impl BlobRepo {
             return Ok(false);
         }
         let sql = format!(r#"UPDATE {table} SET totp_secret='' WHERE "user"=$1"#);
-        self.lock().execute(&sql, &[&user])?;
+        tx.execute(&sql, &[&user])?;
+        let purpose = if table == "users" { "user_totp_setup" } else { "admin_totp_setup" };
+        tx.execute("DELETE FROM verify_codes WHERE audience=$1 AND purpose=$2", &[&user, &purpose])?;
+        tx.commit()?;
         Ok(true)
     }
 
@@ -1998,46 +2005,67 @@ mod tests {
             "INSERT INTO users (\"user\", pass_hash, salt, token, created_at) VALUES
                 ('u-early','h','s','t1','2026-09-01T15:59:00.000Z'),
                 ('u-late','h','s','t2','2026-09-01T16:30:00.000Z');
-             INSERT INTO blobs (\"user\", id, updated_at) VALUES ('u-early','b1','2026-09-01T16:30:00.000Z');
              INSERT INTO sessions (id, \"user\", token_hash, device_name, created_at)
                 VALUES ('s1','u-early','th1','d','2026-09-01T15:59:00.000Z');",
         )?;
         let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).context("required")?;
-        let series = repo.daily_stats_until(7, today).context("required")?;
+        let stats = repo.daily_stats_until(7, today)?;
+        let series = stats["series"].as_array().context("series array")?;
         assert_eq!(series.len(), 7);
         assert_eq!(series[0]["date"], "2026-08-27");
         assert_eq!(series[5]["date"], "2026-09-01");
         assert_eq!(series[6]["date"], "2026-09-02");
         assert_eq!(series[5]["registrations"], 1);
         assert_eq!(series[6]["registrations"], 1);
-        assert_eq!(series[6]["memories"], 1);
-        assert_eq!(series[5]["memories"], 0);
+        assert!(series[6]["memories"].is_null());
+        assert!(series[5]["memories"].is_null());
         assert_eq!(series[5]["sessions"], 1);
         assert_eq!(series[6]["sessions"], 0);
         for p in &series[..5] {
             assert_eq!(p["registrations"], 0);
-            assert_eq!(p["memories"], 0);
+            assert!(p["memories"].is_null());
             assert_eq!(p["sessions"], 0);
         }
         Ok(())
     }
 
     #[test]
-    fn daily_stats_excludes_deleted_users_and_blobs() -> Result<()> {
+    fn daily_stats_counts_first_server_receipt_and_survives_edits_and_deletion() -> Result<()> {
         let repo = repo()?;
         let (s, h) = hash("gone", "pass-1234")?;
         repo.register("gone", &h, &s).context("required")?;
         repo.put("gone", &mem("m1", "2026-09-02T00:00:00.000Z", "aa")).context("required")?;
-        repo.set_deleted("gone", true).context("required")?;
+        repo.put("gone", &mem("m1", "2026-09-02T00:00:00.000Z", "aa"))?;
+        repo.put("gone", &mem("m1", "2026-09-02T00:30:00.000Z", "edited"))?;
+        // A client timestamp is not a server receipt date and cannot break statistics.
+        repo.lock().batch_execute("UPDATE blobs SET updated_at='not-a-timestamp' WHERE id='m1'")?;
         let mut tombstone = mem("m1", "2026-09-02T01:00:00.000Z", "aa");
         tombstone.deleted = true;
         repo.put("gone", &tombstone).context("required")?;
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 3).context("required")?;
-        let series = repo.daily_stats_until(7, today).context("required")?;
-        for p in &series {
-            assert_eq!(p["registrations"], 0);
-            assert_eq!(p["memories"], 0);
+        repo.set_deleted("gone", true)?;
+        let stats = repo.daily_stats(7)?;
+        let series = stats["series"].as_array().context("series array")?;
+        let current = series.last().context("current day")?;
+        assert_eq!(current["registrations"], 1);
+        assert_eq!(current["memories"], 1);
+        assert_eq!(current["sessions"], 0);
+        repo.lock().batch_execute("DELETE FROM blobs; DELETE FROM sessions; DELETE FROM users")?;
+        assert_eq!(repo.daily_stats(7)?, stats, "anonymous totals survive hard deletion");
+        Ok(())
+    }
+
+    #[test]
+    fn daily_stats_rollback_and_first_tombstone_do_not_increment() -> Result<()> {
+        let repo = repo()?;
+        let before = repo.daily_stats(7)?;
+        {
+            let mut client = repo.lock();
+            let mut tx = client.transaction()?;
+            tx.batch_execute("INSERT INTO blobs (\"user\",id,updated_at) VALUES ('fixture','rollback','invalid')")?;
+            tx.rollback()?;
+            client.batch_execute("INSERT INTO blobs (\"user\",id,deleted,updated_at) VALUES ('fixture','tombstone',1,'invalid')")?;
         }
+        assert_eq!(repo.daily_stats(7)?, before);
         Ok(())
     }
 }

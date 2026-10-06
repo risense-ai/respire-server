@@ -40,6 +40,10 @@ generic code and templates. Never upload deployment snapshots or database dumps.
   marker for a tested restore. This script cannot prepare an empty database.
 - The existing `db` service must already be running under the same Compose project
   supplied by the operator. The script never starts or recreates it.
+- Configure `RESPIRE_DASHBOARD_URL` for the selected API in the private `.env` or
+  `deployment.env`: DEV requires `https://dash.dev.rsrs.rs`; production uses
+  `https://dash.rsrs.rs`. The production fallback is not a valid DEV setting.
+  After rollout, check the device-code verification origin before login acceptance.
 - Bash, GNU coreutils, `flock`, `gzip`, `curl`, Docker, and Compose v2 with `--wait`,
   `--no-deps`, and `--pull never` support. No registry credentials are needed to load
   the archive. Disk space must cover a full database dump and loaded server image.
@@ -107,6 +111,14 @@ For subsequent manual API inspection, use the same project, live env files and
 `compose.yaml`: it does not use the new API image pin by default.
 
 ## Failed or interrupted deployment
+
+CLI browser authorization adds the device-grant table in cloud schema 5. The
+schema migration is transactional and preserves existing account, vault and
+memory rows. A schema-4 server refuses to open schema 5, so switching its image
+back alone is insufficient. Rehearse the pre-upgrade database restore in an
+isolated database before rollout; do not use `--schema-compatible` to roll back
+to a schema-4 binary. Stop writes before a reviewed database restore and account
+for writes made after the backup.
 
 Each attempt creates a unique, private `api-releases/<SHA>-<timestamp>.<suffix>`
 directory and a correspondingly unique `backups/pre-api-<attempt>.dump` plus checksum.

@@ -13,6 +13,34 @@ pub(super) fn route(
     user: &str,
     token: &str,
 ) -> Option<(u16, String)> {
+    if let Some(reply) = super::github::route(repo, method, path, body, Some(user)) {
+        return Some(reply);
+    }
+    if let Some(code) = path.strip_prefix("/api/self/cli-authorization/") {
+        if code.len()!=12 || !code.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Some(json(400, serde_json::json!({"error":"invalid authorization code"})));
+        }
+        let code = code.to_uppercase();
+        if method == "GET" {
+            return Some(match repo.cli_authorization_info(&code) {
+                Ok(Some(info))=>json(200,info),
+                Ok(None)=>json(404,serde_json::json!({"error":"authorization expired or unavailable"})),
+                Err(error)=>server_error(error),
+            });
+        }
+        if method == "POST" {
+            #[derive(serde::Deserialize)]
+            struct Decision { approve: bool }
+            let Ok(input) = serde_json::from_str::<Decision>(body) else {
+                return Some(json(400,serde_json::json!({"error":"bad json"})));
+            };
+            return Some(match repo.decide_cli_authorization(&code,user,input.approve) {
+                Ok(true)=>json(200,serde_json::json!({"ok":true})),
+                Ok(false)=>json(409,serde_json::json!({"error":"authorization expired, decided or belongs to another account"})),
+                Err(error)=>server_error(error),
+            });
+        }
+    }
     if method == "GET" && path == "/api/self/sessions" {
         return Some(match repo.list_sessions(user, token) {
             Ok(sessions) => json(200, serde_json::json!({"sessions": sessions})),
@@ -155,7 +183,7 @@ pub(super) fn route(
                 let _ = repo.audit(user, "totp_on", user, "");
                 json(200, serde_json::json!({"totp": true}))
             }
-            Ok(false) => json(401, serde_json::json!({"error": "bad totp"})),
+            Ok(false) => json(400, serde_json::json!({"error": "bad totp"})),
             Err(e) => server_error(e),
         });
     }
@@ -168,7 +196,7 @@ pub(super) fn route(
                 let _ = repo.audit(user, "totp_off", user, "");
                 json(200, serde_json::json!({"totp": false}))
             }
-            Ok(false) => json(401, serde_json::json!({"error": "bad totp"})),
+            Ok(false) => json(400, serde_json::json!({"error": "bad totp"})),
             Err(e) => server_error(e),
         });
     }

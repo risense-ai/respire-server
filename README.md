@@ -38,6 +38,12 @@ All frontend source, browser tests and builds live in [respire-site](https://git
 
 ## Endpoint ownership and staged deployment
 
+Admin daily operations statistics use schema 7 and owner/admin-only
+`GET /admin/stats?days=30`. Memory totals start at first server receipt after
+tracking is enabled; editing or deleting records never rewrites historical totals.
+Earlier memory counts are unknown, while historical registrations and sessions
+cover records retained at upgrade. See the [producer browser contract](docs/browser-api-contract.md).
+
 | Host | Owner | Target surface |
 |---|---|---|
 | `https://rsrs.rs` | `respire-site` | Homepage |
@@ -56,6 +62,13 @@ validated API image. Set `RESPIRE_CORS_ALLOWED_ORIGINS` to the exact trusted bro
 origins before Pages acceptance. It is empty by default. Cloud CORS supports
 `GET`, `POST`, `Authorization` and `Content-Type`; it does not enable cookies or
 change bearer/role authorization. See [configuration and acceptance](docs/browser-api-contract.md).
+
+Set `RESPIRE_DASHBOARD_URL` to the Dashboard for the selected API environment
+before starting the API. For DEV, set `RESPIRE_DASHBOARD_URL=https://dash.dev.rsrs.rs`
+in the private `.env` or `deployment.env`; production uses `https://dash.rsrs.rs`.
+The generic example and Compose fallback are production values, so a DEV setup
+must override them. Verify that `/oauth/device/code` returns a verification link
+on the selected Dashboard before accepting CLI/TUI login.
 
 Use the manual **API deployment artifact** workflow after Server CI and Server
 image succeed for the exact source revision. It packages only the API image and

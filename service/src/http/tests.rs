@@ -396,6 +396,9 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         assert_eq!(status, 200, "{reply}");
         let v: serde_json::Value = serde_json::from_str(&reply)?;
         assert_eq!(v["days"], 30);
+        assert_eq!(v["timezone"], "Asia/Shanghai");
+        assert!(v["memory_tracking_since"].as_str().is_some());
+        assert_eq!(v["historical_baseline"], "retained_registrations_and_sessions");
         let series = v["series"].as_array().context("series array")?;
         assert_eq!(series.len(), 30);
         let mut dates: Vec<&str> = Vec::with_capacity(series.len());
@@ -407,7 +410,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             p.get("registrations").is_some() && p.get("memories").is_some() && p.get("sessions").is_some()
         }));
 
-        for days in ["3", "365", "0", "-7", "abc"] {
+        for days in ["3", "365", "0", "-7", "abc", "7.5", "", "4294967296"] {
             let (status, _) = handle(&repo, "GET", &format!("/admin/stats?days={days}"), "", Some(&owner_tok));
             assert_eq!(status, 400, "days={days}");
         }
@@ -1086,7 +1089,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
     #[test]
     fn self_email_and_totp_begin() -> Result<()> {
         let repo = repo()?;
-        let (token, _, _) = register_user(&repo, "mailer")?;
+        let (token, _, hash) = register_user(&repo, "mailer")?;
         let (status, reply) = handle(
             &repo,
             "POST",
@@ -1106,6 +1109,91 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         let (status, reply) = handle(&repo, "POST", "/api/self/totp/begin", "", Some(&token));
         assert_eq!(status, 200, "{reply}");
         assert!(reply.contains("secret") || reply.contains("otpauth"));
+        let setup: serde_json::Value = serde_json::from_str(&reply)?;
+        let secret = setup["secret"].as_str().context("setup secret")?;
+        let code = crate::totp::generate(secret, chrono::Utc::now().timestamp()).context("current TOTP")?;
+        let wrong = format!("{:06}", (code.parse::<u32>()? + 1) % 1_000_000);
+        let bad_code = serde_json::json!({"code":wrong}).to_string();
+        let good_code = serde_json::json!({"code":code}).to_string();
+        assert_eq!(handle(&repo, "POST", "/api/self/totp/confirm", &bad_code, Some(&token)).0, 400);
+        assert_eq!(handle(&repo, "GET", "/api/self", "", Some(&token)).0, 200);
+        assert_eq!(handle(&repo, "POST", "/api/self/totp/confirm", &good_code, Some(&token)).0, 200);
+        let (_, keys) = handle(&repo, "GET", "/api/self/keys", "", Some(&token));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&keys)?["totp"], true);
+
+        let (_, challenge) = handle(&repo, "POST", "/login", &serde_json::json!({"user":"mailer","pass_hash":hash}).to_string(), None);
+        let challenge: serde_json::Value = serde_json::from_str(&challenge)?;
+        assert_eq!(challenge["totp_required"], true);
+        assert_eq!(handle(&repo, "POST", "/login/totp", &serde_json::json!({"ticket":challenge["ticket"],"code":wrong,"device_name":"browser"}).to_string(), None).0, 401);
+        let (status, completed) = handle(&repo, "POST", "/login/totp", &serde_json::json!({"ticket":challenge["ticket"],"code":code,"device_name":"browser"}).to_string(), None);
+        assert_eq!(status, 200, "{completed}");
+        let browser: serde_json::Value = serde_json::from_str(&completed)?;
+        let browser_token = browser["token"].as_str().context("browser token")?;
+        let (other, _, _) = register_user(&repo, "other")?;
+
+        let start = || -> Result<serde_json::Value> {
+            let (status, reply) = handle(&repo, "POST", "/oauth/device/code", "client_id=respire-cli&device_name=CLI&expected_user=mailer", None);
+            assert_eq!(status, 200, "{reply}");
+            let grant: serde_json::Value = serde_json::from_str(&reply)?;
+            assert_eq!(grant["expires_in"], 600);
+            assert_eq!(grant["interval"], 5);
+            assert!(grant["verification_uri_complete"].as_str().context("verification URI")?.contains(grant["user_code"].as_str().context("user code")?));
+            Ok(grant)
+        };
+        let request = |grant: &serde_json::Value| -> Result<String> {
+            Ok(format!("client_id=respire-cli&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={}", grant["device_code"].as_str().context("device code")?))
+        };
+        let grant = start()?;
+        let user_code = grant["user_code"].as_str().context("user code")?;
+        let path = format!("/api/self/cli-authorization/{}", user_code.to_lowercase());
+        let body = request(&grant)?;
+        let (status, pending) = handle(&repo, "POST", "/oauth/token", &body, None);
+        assert_eq!(status, 400);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&pending)?["error"], "authorization_pending");
+        let (_, slowed) = handle(&repo, "POST", "/oauth/token", &body, None);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&slowed)?["error"], "slow_down");
+        assert_eq!(handle(&repo, "GET", &path, "", Some(browser_token)).0, 200);
+        assert_eq!(handle(&repo, "POST", &path, r#"{"approve":true}"#, Some(&other)).0, 409);
+        assert_eq!(handle(&repo, "POST", &path, "invalid", Some(browser_token)).0, 400);
+        let (_, readonly) = handle(&repo, "POST", "/api/self/sessions", r#"{"device_name":"reader","readonly":true}"#, Some(&token));
+        let readonly: serde_json::Value = serde_json::from_str(&readonly)?;
+        assert_eq!(handle(&repo, "POST", &path, r#"{"approve":true}"#, Some(readonly["token"].as_str().context("readonly token")?)).0, 403);
+        assert_eq!(handle(&repo, "POST", &path, r#"{"approve":true}"#, Some(browser_token)).0, 200);
+        assert_eq!(handle(&repo, "POST", &path, r#"{"approve":true}"#, Some(browser_token)).0, 409);
+        repo.lock().execute("UPDATE cli_authorizations SET next_poll=0 WHERE user_code=$1", &[&user_code])?;
+        let (status, access) = handle(&repo, "POST", "/oauth/token", &body, None);
+        assert_eq!(status, 200, "{access}");
+        let access: serde_json::Value = serde_json::from_str(&access)?;
+        assert_eq!(access["token_type"], "Bearer");
+        assert_eq!(access["user"], "mailer");
+        assert_eq!(handle(&repo, "GET", "/api/self", "", Some(access["access_token"].as_str().context("access token")?)).0, 200);
+        let (status, replay) = handle(&repo, "POST", "/oauth/token", &body, None);
+        assert_eq!(status, 400);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&replay)?["error"], "invalid_grant");
+        let denied = start()?;
+        let denied_path = format!("/api/self/cli-authorization/{}", denied["user_code"].as_str().context("user code")?);
+        assert_eq!(handle(&repo, "POST", &denied_path, r#"{"approve":false}"#, Some(browser_token)).0, 200);
+        let (_, denied) = handle(&repo, "POST", "/oauth/token", &request(&denied)?, None);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&denied)?["error"], "access_denied");
+        let expired = start()?;
+        repo.lock().execute("UPDATE cli_authorizations SET expires_at=0 WHERE user_code=$1", &[&expired["user_code"].as_str().context("user code")?])?;
+        let (_, expired_reply) = handle(&repo, "POST", "/oauth/token", &request(&expired)?, None);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&expired_reply)?["error"], "expired_token");
+        assert_eq!(handle(&repo, "GET", &format!("/api/self/cli-authorization/{}", expired["user_code"].as_str().context("code")?), "", Some(browser_token)).0, 404);
+        assert_eq!(handle(&repo, "POST", "/oauth/device/code", "client_id=wrong", None).0, 400);
+        assert_eq!(handle(&repo, "POST", "/oauth/device/code", "client_id=respire-cli&client_id=respire-cli", None).0, 400);
+        assert_eq!(handle(&repo, "POST", "/oauth/device/code", "client_id=respire-cli&device_name=", None).0, 400);
+        assert_eq!(handle(&repo, "POST", "/oauth/token", "client_id=wrong", None).0, 400);
+        assert_eq!(handle(&repo, "POST", "/oauth/token", "client_id=respire-cli&grant_type=wrong", None).0, 400);
+        assert_eq!(handle(&repo, "POST", "/oauth/token", "client_id=respire-cli&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code=short", None).0, 400);
+
+        assert_eq!(handle(&repo, "POST", "/api/self/totp/disable", &bad_code, Some(browser_token)).0, 400);
+        assert_eq!(handle(&repo, "GET", "/api/self", "", Some(browser_token)).0, 200);
+        assert_eq!(handle(&repo, "POST", "/api/self/totp/disable", &good_code, Some(browser_token)).0, 200);
+        assert_eq!(handle(&repo, "POST", "/api/self/totp/disable", &good_code, Some(browser_token)).0, 200);
+        assert_eq!(handle(&repo, "GET", "/api/self", "", Some(browser_token)).0, 200);
+        let (_, keys) = handle(&repo, "GET", "/api/self/keys", "", Some(browser_token));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&keys)?["totp"], false);
         Ok(())
     }
 

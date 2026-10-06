@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use postgres::{Client, Transaction};
 
 /// Highest migration version this binary applies; databases above it are refused.
-pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 6;
+pub(crate) const CURRENT_SCHEMA_VERSION: i32 = MIGRATIONS[MIGRATIONS.len() - 1].version;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
@@ -39,13 +39,18 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 5,
-        name: "0004_sessions_readonly.sql",
-        sql: include_str!("migrations/0004_sessions_readonly.sql"),
+        name: "0004_device_auth.sql",
+        sql: include_str!("migrations/0004_device_auth.sql"),
     },
     Migration {
         version: 6,
-        name: "0005_stats_created_at_indexes.sql",
-        sql: include_str!("migrations/0005_stats_created_at_indexes.sql"),
+        name: "0005_github_auth.sql",
+        sql: include_str!("migrations/0005_github_auth.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "0006_ops_stats.sql",
+        sql: include_str!("migrations/0006_ops_stats.sql"),
     },
 ];
 
@@ -145,19 +150,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filename_order_is_version_order() {
+    fn filename_order_is_version_order() -> Result<()> {
         let mut names: Vec<&str> = MIGRATIONS.iter().map(|m| m.name).collect();
         names.sort_unstable();
         assert_eq!(names, MIGRATIONS.iter().map(|m| m.name).collect::<Vec<_>>());
-        let first = MIGRATIONS.first().expect("at least one migration");
+        let first = MIGRATIONS.first().ok_or_else(|| anyhow!("at least one migration"))?;
         assert_eq!(first.version, 2, "the first migration lifts the v1 baseline to v2");
         for pair in MIGRATIONS.windows(2) {
             let prefix: i32 = pair[1].name.split('_').next().and_then(|p| p.parse().ok())
-                .unwrap_or_else(|| panic!("migration {} must be named NNNN_description.sql", pair[1].name));
+                .ok_or_else(|| anyhow!("migration {} must be named NNNN_description.sql", pair[1].name))?;
             assert_eq!(pair[1].version, prefix + 1, "{} version must be prefix+1", pair[1].name);
             assert_eq!(pair[1].version, pair[0].version + 1, "versions must be contiguous");
         }
-        assert_eq!(CURRENT_SCHEMA_VERSION, MIGRATIONS.last().expect("at least one migration").version);
+        assert_eq!(CURRENT_SCHEMA_VERSION, MIGRATIONS.last().ok_or_else(|| anyhow!("at least one migration"))?.version);
+        Ok(())
     }
 
     #[test]
@@ -168,12 +174,10 @@ mod tests {
             apply(&mut client)?;
             let stored = version_of(&mut client)?;
             assert_eq!(stored, CURRENT_SCHEMA_VERSION);
-            // The v5 migration is a no-op on fresh databases (baseline already has the column).
-            let readonly: i32 = client
-                .query_one("SELECT readonly FROM sessions LIMIT 1", &[])
-                .map(|row| row.get(0))
-                .unwrap_or(0);
-            assert_eq!(readonly, 0);
+            let columns: i64 = client.query_one(
+                "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=current_schema()
+                 AND table_name='sessions' AND column_name='readonly'", &[])? .get(0);
+            assert_eq!(columns, 1);
         }
         Ok(())
     }
@@ -185,9 +189,11 @@ mod tests {
             let mut client = repo.lock();
             // Simulate a v1 database: baseline tables without sync/resolution/mail objects.
             client.batch_execute(
-                "DROP TABLE IF EXISTS sync_resolutions, sync_heads, sync_versions, sync_accounts,
+                "DROP TABLE IF EXISTS github_authorizations, github_identities, cli_authorizations, ops_daily_stats,
+                     sync_resolutions, sync_heads, sync_versions, sync_accounts,
                      mail_outbox, verify_codes, audit_log, super_admins, vault, sessions, blobs,
-                     users, sync_counter, schema_meta CASCADE;",
+                     users, sync_counter, schema_meta CASCADE;
+                 DROP FUNCTION IF EXISTS record_ops_insert();",
             )?;
             client.batch_execute(SCHEMA_SQL)?;
             client.batch_execute(
@@ -247,6 +253,79 @@ mod tests {
     }
 
     #[test]
+    fn v6_upgrade_preserves_auth_ciphertext_and_does_not_guess_memory_history() -> Result<()> {
+        let repo = crate::store::connect_unique()?;
+        let mut client = repo.lock();
+        client.batch_execute(
+            "DROP TABLE ops_daily_stats;
+             DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
+             DROP TRIGGER ops_session_insert ON sessions; DROP FUNCTION record_ops_insert();
+             DELETE FROM schema_meta WHERE k='ops_stats_started_at';
+             UPDATE schema_meta SET v='6' WHERE k='version';
+             INSERT INTO users (\"user\",pass_hash,salt,token,created_at,totp_secret)
+             VALUES ('upgrade','hash','salt','token','2026-09-01T16:00:00Z','totp');
+             INSERT INTO sessions (id,\"user\",token_hash,device_name,created_at,readonly)
+             VALUES ('upgrade-session','upgrade','session-hash','device','2026-09-01T15:59:59Z',1);
+             INSERT INTO github_identities (github_id,\"user\",github_login,linked_at)
+             VALUES (123,'upgrade','fixture','2026-09-01T00:00:00Z');
+             INSERT INTO blobs (\"user\",id,ciphertext,nonce,updated_at,rev)
+             VALUES ('upgrade','legacy','encrypted','nonce','invalid-client-date',42);",
+        )?;
+        apply(&mut client)?;
+        assert_eq!(version_of(&mut client)?, 7);
+        let user = client.query_one("SELECT pass_hash,salt,token,totp_secret FROM users WHERE \"user\"='upgrade'", &[])?;
+        assert_eq!(user.get::<_, String>(0), "hash");
+        assert_eq!(user.get::<_, String>(1), "salt");
+        assert_eq!(user.get::<_, String>(2), "token");
+        assert_eq!(user.get::<_, String>(3), "totp");
+        assert_eq!(client.query_one("SELECT readonly FROM sessions WHERE id='upgrade-session'", &[])?.get::<_, i32>(0), 1);
+        assert_eq!(client.query_one("SELECT github_id FROM github_identities WHERE \"user\"='upgrade'", &[])?.get::<_, i64>(0), 123);
+        let blob = client.query_one("SELECT ciphertext,nonce,updated_at,rev FROM blobs WHERE id='legacy'", &[])?;
+        assert_eq!(blob.get::<_, String>(0), "encrypted");
+        assert_eq!(blob.get::<_, String>(1), "nonce");
+        assert_eq!(blob.get::<_, String>(2), "invalid-client-date");
+        assert_eq!(blob.get::<_, i64>(3), 42);
+        assert_eq!(client.query_one("SELECT SUM(memories)::bigint FROM ops_daily_stats", &[])?.get::<_, i64>(0), 0);
+        assert_eq!(client.query_one("SELECT registrations FROM ops_daily_stats WHERE day='2026-09-02'", &[])?.get::<_, i64>(0), 1);
+        assert_eq!(client.query_one("SELECT sessions FROM ops_daily_stats WHERE day='2026-09-01'", &[])?.get::<_, i64>(0), 1);
+        let started: String = client.query_one("SELECT v FROM schema_meta WHERE k='ops_stats_started_at'", &[])?.get(0);
+        apply(&mut client)?;
+        assert_eq!(client.query_one("SELECT v FROM schema_meta WHERE k='ops_stats_started_at'", &[])?.get::<_, String>(0), started);
+        Ok(())
+    }
+
+    #[test]
+    fn v4_and_v5_upgrade_apply_current_auth_versions_before_statistics() -> Result<()> {
+        for version in [4, 5] {
+            let repo = crate::store::connect_unique()?;
+            let mut client = repo.lock();
+            client.batch_execute(
+                "DROP TABLE ops_daily_stats, github_authorizations, github_identities;
+                 DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
+                 DROP TRIGGER ops_session_insert ON sessions; DROP FUNCTION record_ops_insert();
+                 DELETE FROM schema_meta WHERE k='ops_stats_started_at';",
+            )?;
+            if version == 4 {
+                client.batch_execute("DROP TABLE cli_authorizations; ALTER TABLE sessions DROP COLUMN readonly")?;
+            }
+            client.execute("UPDATE schema_meta SET v=$1 WHERE k='version'", &[&version.to_string()])?;
+            apply(&mut client)?;
+            assert_eq!(version_of(&mut client)?, 7);
+            let tables: i64 = client.query_one(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema()
+                 AND table_name IN ('cli_authorizations','github_identities','github_authorizations','ops_daily_stats')", &[],
+            )?.get(0);
+            assert_eq!(tables, 4, "schema {version} must retain device and GitHub migrations");
+            client.batch_execute(
+                "INSERT INTO sessions (id,\"user\",token_hash,device_name,created_at)
+                 VALUES ('readonly-default','fixture','hash','device','2026-09-01T00:00:00Z')",
+            )?;
+            assert_eq!(client.query_one("SELECT readonly FROM sessions WHERE id='readonly-default'", &[])?.get::<_, i32>(0), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn failing_migration_rolls_back_schema_and_version() -> Result<()> {
         let repo = crate::store::connect_unique()?;
         {
@@ -294,7 +373,7 @@ mod tests {
         let repo = crate::store::connect_unique()?;
         {
             let mut client = repo.lock();
-            client.batch_execute("UPDATE schema_meta SET v='7' WHERE k='version'")?;
+            client.execute("UPDATE schema_meta SET v=$1 WHERE k='version'", &[&(CURRENT_SCHEMA_VERSION + 1).to_string()])?;
         }
         let error = match crate::store::BlobRepo::connect(&repo.url) {
             Err(e) => e.to_string(),

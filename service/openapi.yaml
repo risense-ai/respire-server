@@ -14,6 +14,224 @@ servers:
   - url: http://127.0.0.1:8787
     description: Local development server.
 paths:
+  /admin/stats:
+    get:
+      summary: Anonymous daily insert totals in Asia/Shanghai (owner or admin only)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 7, maximum: 90, default: 30 }
+      responses:
+        "200":
+          description: Memory counts start at schema 7; historical registrations/sessions cover retained records at upgrade. Later deletion never reduces these event totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days, timezone, memory_tracking_since, historical_baseline, series]
+                properties:
+                  days: { type: integer }
+                  timezone: { type: string, enum: [Asia/Shanghai] }
+                  memory_tracking_since: { type: string, format: date }
+                  historical_baseline: { type: string, enum: [retained_registrations_and_sessions] }
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      required: [date, registrations, memories, sessions]
+                      properties:
+                        date: { type: string, format: date }
+                        registrations: { type: integer, minimum: 0 }
+                        memories: { type: integer, minimum: 0, nullable: true, description: First live blob inserted on the server; null before tracking started. }
+                        sessions: { type: integer, minimum: 0 }
+        "400": { description: days is not an integer in 7–90 }
+        "401": { description: Missing or invalid admin credentials }
+        "403": { description: Viewer cannot read operations statistics }
+        "503": { description: Database unavailable }
+  /oauth/github/start:
+    post:
+      summary: Start ten-minute GitHub authorization with PKCE
+      responses:
+        "200":
+          description: Browser must save and compare state, expiry and its original hash route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GithubStart' }
+        "503": { description: GitHub is not configured }
+  /oauth/github/exchange:
+    post:
+      summary: Consume a GitHub grant and sign in or register by immutable GitHub ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GithubExchange' }
+      responses:
+        "200": { description: User session or totp_required ticket. Vault recovery stays local. }
+        "400": { description: Invalid, expired or replayed state }
+        "409": { description: Disabled/deleted account or name conflict; never merge accounts }
+        "502": { description: GitHub denied or exchange failed; restart authorization }
+  /api/self/github:
+    get:
+      summary: Read your GitHub binding status
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: bound with optional numeric id and current login }
+  /api/self/github/start:
+    post:
+      summary: Start owner-bound GitHub linking
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Ten-minute owner-bound browser grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GithubStart' }
+        "403": { description: Readonly session }
+        "503": { description: GitHub is not configured }
+  /api/self/github/exchange:
+    post:
+      summary: Consume your grant and link an unbound GitHub identity
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GithubExchange' }
+      responses:
+        "200": { description: bound, numeric id and login; session is unchanged }
+        "400": { description: Invalid, expired, replayed or wrong-owner grant }
+        "409": { description: Either identity is already bound }
+        "502": { description: GitHub exchange failed }
+  /api/self/github/unbind:
+    post:
+      summary: Unlink GitHub without signing out or changing encrypted data
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: bound is false; existing sessions remain valid }
+        "409": { description: Set a login password before removing the sole login method }
+  /api/self/github/vault:
+    post:
+      summary: Initialize a GitHub account's version-4 vault exactly once
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kdf_salt, wrapped_urk, urk_nonce, version]
+              properties:
+                kdf_salt: { type: string, pattern: '^[0-9a-fA-F]{32}$' }
+                wrapped_urk: { type: string, pattern: '^[0-9a-fA-F]{96}$' }
+                urk_nonce: { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+                version: { type: integer, enum: [4] }
+      responses:
+        "200": { description: Initial vault stored; no plaintext recovery code accepted }
+        "400": { description: Invalid wrapped vault }
+        "409": { description: Preserve existing vault/memories or account is unavailable }
+  /oauth/device/code:
+    post:
+      summary: Start OAuth device authorization for the public Respire CLI
+      description: RFC 8628 device grant. The dashboard origin comes from RESPIRE_DASHBOARD_URL, defaulting to https://dash.rsrs.rs. Development deployments must set their own dashboard origin.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: string, enum: [respire-cli] }
+                device_name: { type: string, maxLength: 128, default: CLI }
+                expected_user: { type: string, maxLength: 256 }
+      responses:
+        "200":
+          description: Ten-minute, single-use grant. Display and compare user_code before approving in the dashboard. Keep device_code private.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval]
+                properties:
+                  device_code: { type: string }
+                  user_code: { type: string, pattern: '^[A-F0-9]{12}$' }
+                  verification_uri: { type: string, format: uri }
+                  verification_uri_complete: { type: string, format: uri }
+                  expires_in: { type: integer, enum: [600] }
+                  interval: { type: integer, enum: [5] }
+        "400": { description: invalid_request or invalid_client }
+  /oauth/token:
+    post:
+      summary: Exchange an approved OAuth device grant once
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id, grant_type, device_code]
+              properties:
+                client_id: { type: string, enum: [respire-cli] }
+                grant_type: { type: string, enum: ['urn:ietf:params:oauth:grant-type:device_code'] }
+                device_code: { type: string }
+      responses:
+        "200":
+          description: Normal account session, revocable through the sessions API. No refresh token is issued. Never put access_token in a browser URL.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, user, session_id]
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  user: { type: string }
+                  session_id: { type: string }
+        "400": { description: authorization_pending, slow_down, access_denied, expired_token, invalid_grant, invalid_request, invalid_client or unsupported_grant_type. Increase the polling interval by five seconds for slow_down. }
+  /api/self/cli-authorization/{code}:
+    parameters:
+      - { name: code, in: path, required: true, schema: { type: string, pattern: '^[A-Fa-f0-9]{12}$' } }
+    get:
+      summary: Inspect a pending CLI authorization without exposing its private device code
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Device name, expected account, remaining expiry and state }
+        "404": { description: Grant expired or unavailable }
+    post:
+      summary: Explicitly approve or deny the CLI authorization as the signed-in account
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approve]
+              properties:
+                approve: { type: boolean }
+      responses:
+        "200": { description: Decision recorded; no super password is sent to the server }
+        "403": { description: Readonly sessions cannot authorize another session }
+        "409": { description: Grant expired, already decided or expected a different account }
+  /api/self/totp/disable:
+    post:
+      summary: Disable TOTP after verifying its current code, preserving existing sessions
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        "200": { description: TOTP disabled; existing login sessions remain valid }
+        "400": { description: Invalid TOTP code; binding and session remain intact }
+        "401": { description: Missing or invalid session token }
   /api/self/memories:
     get:
       summary: Bounded ciphertext snapshot or incremental browser page
@@ -228,6 +446,20 @@ paths:
       responses:
         "200": { description: Stored }
 components:
+  schemas:
+    GithubStart:
+      type: object
+      required: [state, authorization_uri, expires_in]
+      properties:
+        state: { type: string, pattern: '^[0-9a-f]{64}$' }
+        authorization_uri: { type: string, format: uri }
+        expires_in: { type: integer, enum: [600] }
+    GithubExchange:
+      type: object
+      required: [state, code]
+      properties:
+        state: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        code: { type: string, minLength: 1, maxLength: 512 }
   securitySchemes:
     bearerAuth:
       type: http

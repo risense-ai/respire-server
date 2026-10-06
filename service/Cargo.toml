@@ -12,9 +12,10 @@ name = "respire-server"
 path = "src/main.rs"
 
 [dependencies]
-respire = { package = "respire_app", git = "https://github.com/risense-ai/respire-cli.git", rev = "b18ade542bdb3bb00094d8427fa811f4d0a4d46a" }
+respire = { package = "respire_app", git = "https://github.com/risense-ai/respire-cli.git", rev = "09c2c4acd8e0e2dc178442345dd0446386f73d5f" }
 anyhow = "1.0"
 bytes = "1"
+base64 = "0.22.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "6.0"
@@ -31,6 +32,8 @@ lettre = { version = "0.11.23", default-features = false, features = ["builder",
 tiny_http = "0.12"
 tokio = { version = "1.53.1", features = ["net", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1.0", features = ["v4"] }
+url = "2.5"
+ureq = { version = "2.12.1", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3.15"

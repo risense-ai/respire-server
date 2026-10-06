@@ -4,6 +4,83 @@ The producer is `risense-ai/respire-server`. Homepage, Dashboard and Admin are o
 builds set the public `VITE_API_BASE_URL` to the chosen HTTPS API origin, normally
 `https://api.rsrs.rs`. No secret belongs in a `VITE_*` variable.
 
+## GitHub sign-in and account linking
+
+Configure `RESPIRE_GITHUB_CLIENT_ID`, `RESPIRE_GITHUB_CLIENT_SECRET` and
+`RESPIRE_GITHUB_REDIRECT_URI` only on the API server. Use separate DEV and
+production apps. The exact callback is the HTTPS dashboard root with a trailing
+slash, matching `RESPIRE_DASHBOARD_URL`; wildcard callbacks are not supported.
+Empty configuration disables GitHub sign-in; partial or mismatched configuration
+fails startup. No provider secret belongs in frontend variables.
+
+`POST /oauth/github/start` returns `state`, `authorization_uri`, and
+`expires_in=600`. The browser saves state, expiry and its original hash route in
+session storage before redirecting. The API holds the PKCE verifier and a hash
+of state. On callback, the browser rejects mismatched/expired state, clears code
+and state from its URL, restores the hash, and posts `{state,code}` to
+`/oauth/github/exchange`. Each grant is consumed once, including provider errors;
+retry starts a new authorization. Fixed GitHub HTTPS endpoints have bounded
+timeouts and response sizes; provider access/refresh tokens never enter the
+database, frontend response, URL, or logs. No repository/email scope is requested.
+
+Identity uses GitHub's numeric ID, never email or mutable login name. Existing
+bindings return the same Respire account and still require `/login/totp` when
+TOTP is enabled. New identities create `github-{id}` accounts without a password;
+the `github-` namespace is reserved at public registration, and pre-existing
+username conflicts reject rather than merge. Empty stored hashes disable the
+password login path entirely. Dashboard sign-in requires local
+vault recovery-code validation before replacing the browser account. CLI/TUI
+keep `#/authorize?code=...`, require explicit browser approval, then prompt for
+the recovery code in the terminal. GitHub never decrypts a vault.
+
+Authenticated `GET /api/self/github` returns `{bound,id?,login?}`. Binding uses
+`POST /api/self/github/start` and `/exchange` with the same browser correlation;
+the grant is also bound to the authenticated Respire owner. Existing bindings
+cannot be replaced or stolen. `POST /api/self/github/unbind` keeps sessions,
+vault and ciphertext; it returns 409 until a login password exists, preventing
+removal of the sole login method. Readonly sessions cannot make these changes.
+
+New/uninitialized GitHub accounts generate a local recovery code and explicitly
+confirm it was saved. `POST /api/self/github/vault` stores a version-4 wrapped
+vault only if the account is active, GitHub-bound, and has neither an existing
+vault nor any memory rows. It never overwrites a vault, even after an abandoned
+registration is resumed. The existing password settings add a password later.
+
+Schema version 6 adds provider bindings and ephemeral grants only. Back up DEV
+before upgrading; rollback uses the previous image and the pre-upgrade database
+snapshot because older servers reject newer schemas. Production deployment
+requires the user's completed DEV acceptance.
+
+## CLI authorization and TOTP management
+
+CLI browser sign-in uses the OAuth device grant: form-encoded `POST /oauth/device/code`
+with public `client_id=respire-cli`, then `POST /oauth/token` with
+`grant_type=urn:ietf:params:oauth:grant-type:device_code`. Device grants expire in
+600 seconds and require at least five seconds between polls. `slow_down` adds
+five seconds to the client's interval. Approval creates a normal revocable user
+session once; denial, expiration and replay do not create sessions. Device codes
+are private and are stored only as hashes. Access tokens never enter URLs.
+
+The verification origin is server-owned `RESPIRE_DASHBOARD_URL`, defaulting to
+`https://dash.rsrs.rs`; DEV must set `https://dash.dev.rsrs.rs`. The Dashboard
+route `/#/authorize` accepts a displayed user code; `/#/authorize?code=...`
+prefills it. After normal password and TOTP sign-in, the page shows the account,
+device and user code and requires an explicit approve/deny action through
+`/api/self/cli-authorization/{code}`. Readonly sessions cannot approve. The CLI
+checks the returned verification origin and requests the memory super password
+locally after approval; the server never receives that decryption factor.
+
+Authenticated TOTP confirm/disable failures use HTTP 400; HTTP 401 continues to
+mean an invalid login session. A correct disable operation clears the binding
+without revoking sessions. Wrong codes preserve both binding and session. Login
+TOTP tickets allow up to five failed attempts before invalidation and are
+consumed on successful verification; the second-factor page can retry a typo.
+
+Schema version 5 adds only the device-grant table and expiry index. Existing
+account/vault/memory rows and session tokens are preserved. Deploy the API and
+matching DEV dashboard before accepting the new CLI dev release; an older API
+returns an explicit failure rather than silently falling back to password login.
+
 ## Exact API source proof
 
 `GET /health` returns the existing `ok`, `service`, and `version` fields plus
@@ -194,3 +271,25 @@ source or workflow definitions.
 `scripts/read-dev-mail.py` remains available for backend/external acceptance
 commands. The Site console also carries its historical copy. Neither helper is
 run by normal Server PR checks.
+
+## Daily operations statistics (schema 7)
+
+`GET /admin/stats?days=N` requires owner/admin credentials; viewers receive 403,
+missing credentials 401. `days` defaults to 30 and accepts integers 7–90 only.
+The response includes `days`, `timezone: "Asia/Shanghai"`, `memory_tracking_since`,
+`historical_baseline: "retained_registrations_and_sessions"` and ascending `series`
+entries containing `date`, `registrations`, `memories`, `sessions`.
+
+Anonymous daily insert counters use Shanghai boundaries and survive later edits,
+logout and soft/hard deletion. Memories count the first live cloud blob insert by
+server receipt time; client LWW timestamps never determine creation time. Prior
+memory history is unavailable (`null`, not zero). Historical registration/session
+totals cover records retained at upgrade, not previously purged events. Known days
+without events are zero-filled. Triggers update counters in the original insert
+transaction, so duplicate upserts and rolled-back transactions do not add events.
+
+Schema 5 remains CLI authorization and schema 6 remains GitHub authorization.
+Schema 7 adds the aggregate table, tracking marker and insert triggers without
+rewriting accounts, auth settings, ciphertext or sync history. Back up and rehearse
+6→7 on an isolated copy. Older binaries refuse schema 7; rollback requires restoring
+the pre-upgrade database backup and its matching API image together.
