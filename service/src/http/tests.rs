@@ -1111,12 +1111,13 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         assert!(reply.contains("secret") || reply.contains("otpauth"));
         let setup: serde_json::Value = serde_json::from_str(&reply)?;
         let secret = setup["secret"].as_str().context("setup secret")?;
-        let code = crate::totp::generate(secret, chrono::Utc::now().timestamp()).context("current TOTP")?;
+        let current_code = || crate::totp::generate(secret, chrono::Utc::now().timestamp()).context("current TOTP");
+        let code = current_code()?;
         let wrong = format!("{:06}", (code.parse::<u32>()? + 1) % 1_000_000);
         let bad_code = serde_json::json!({"code":wrong}).to_string();
-        let good_code = serde_json::json!({"code":code}).to_string();
         assert_eq!(handle(&repo, "POST", "/api/self/totp/confirm", &bad_code, Some(&token)).0, 400);
         assert_eq!(handle(&repo, "GET", "/api/self", "", Some(&token)).0, 200);
+        let good_code = serde_json::json!({"code":current_code()?}).to_string();
         assert_eq!(handle(&repo, "POST", "/api/self/totp/confirm", &good_code, Some(&token)).0, 200);
         let (_, keys) = handle(&repo, "GET", "/api/self/keys", "", Some(&token));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&keys)?["totp"], true);
@@ -1125,7 +1126,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         let challenge: serde_json::Value = serde_json::from_str(&challenge)?;
         assert_eq!(challenge["totp_required"], true);
         assert_eq!(handle(&repo, "POST", "/login/totp", &serde_json::json!({"ticket":challenge["ticket"],"code":wrong,"device_name":"browser"}).to_string(), None).0, 401);
-        let (status, completed) = handle(&repo, "POST", "/login/totp", &serde_json::json!({"ticket":challenge["ticket"],"code":code,"device_name":"browser"}).to_string(), None);
+        let (status, completed) = handle(&repo, "POST", "/login/totp", &serde_json::json!({"ticket":challenge["ticket"],"code":current_code()?,"device_name":"browser"}).to_string(), None);
         assert_eq!(status, 200, "{completed}");
         let browser: serde_json::Value = serde_json::from_str(&completed)?;
         let browser_token = browser["token"].as_str().context("browser token")?;
@@ -1189,7 +1190,8 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
 
         assert_eq!(handle(&repo, "POST", "/api/self/totp/disable", &bad_code, Some(browser_token)).0, 400);
         assert_eq!(handle(&repo, "GET", "/api/self", "", Some(browser_token)).0, 200);
-        assert_eq!(handle(&repo, "POST", "/api/self/totp/disable", &good_code, Some(browser_token)).0, 200);
+        let disable_code = serde_json::json!({"code":current_code()?}).to_string();
+        assert_eq!(handle(&repo, "POST", "/api/self/totp/disable", &disable_code, Some(browser_token)).0, 200);
         assert_eq!(handle(&repo, "POST", "/api/self/totp/disable", &good_code, Some(browser_token)).0, 200);
         assert_eq!(handle(&repo, "GET", "/api/self", "", Some(browser_token)).0, 200);
         let (_, keys) = handle(&repo, "GET", "/api/self/keys", "", Some(browser_token));
