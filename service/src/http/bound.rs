@@ -59,6 +59,7 @@ struct DbJob {
 }
 
 pub fn check_config() -> Result<()> {
+    super::github::check_config()?;
     Limits::from_env()?;
     Cors::from_env().map(|_| ())
 }

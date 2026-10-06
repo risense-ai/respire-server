@@ -4,6 +4,53 @@ The producer is `risense-ai/respire-server`. Homepage, Dashboard and Admin are o
 builds set the public `VITE_API_BASE_URL` to the chosen HTTPS API origin, normally
 `https://api.rsrs.rs`. No secret belongs in a `VITE_*` variable.
 
+## GitHub sign-in and account linking
+
+Configure `RESPIRE_GITHUB_CLIENT_ID`, `RESPIRE_GITHUB_CLIENT_SECRET` and
+`RESPIRE_GITHUB_REDIRECT_URI` only on the API server. Use separate DEV and
+production apps. The exact callback is the HTTPS dashboard root with a trailing
+slash, matching `RESPIRE_DASHBOARD_URL`; wildcard callbacks are not supported.
+Empty configuration disables GitHub sign-in; partial or mismatched configuration
+fails startup. No provider secret belongs in frontend variables.
+
+`POST /oauth/github/start` returns `state`, `authorization_uri`, and
+`expires_in=600`. The browser saves state, expiry and its original hash route in
+session storage before redirecting. The API holds the PKCE verifier and a hash
+of state. On callback, the browser rejects mismatched/expired state, clears code
+and state from its URL, restores the hash, and posts `{state,code}` to
+`/oauth/github/exchange`. Each grant is consumed once, including provider errors;
+retry starts a new authorization. Fixed GitHub HTTPS endpoints have bounded
+timeouts and response sizes; provider access/refresh tokens never enter the
+database, frontend response, URL, or logs. No repository/email scope is requested.
+
+Identity uses GitHub's numeric ID, never email or mutable login name. Existing
+bindings return the same Respire account and still require `/login/totp` when
+TOTP is enabled. New identities create `github-{id}` accounts without a password;
+the `github-` namespace is reserved at public registration, and pre-existing
+username conflicts reject rather than merge. Empty stored hashes disable the
+password login path entirely. Dashboard sign-in requires local
+vault recovery-code validation before replacing the browser account. CLI/TUI
+keep `#/authorize?code=...`, require explicit browser approval, then prompt for
+the recovery code in the terminal. GitHub never decrypts a vault.
+
+Authenticated `GET /api/self/github` returns `{bound,id?,login?}`. Binding uses
+`POST /api/self/github/start` and `/exchange` with the same browser correlation;
+the grant is also bound to the authenticated Respire owner. Existing bindings
+cannot be replaced or stolen. `POST /api/self/github/unbind` keeps sessions,
+vault and ciphertext; it returns 409 until a login password exists, preventing
+removal of the sole login method. Readonly sessions cannot make these changes.
+
+New/uninitialized GitHub accounts generate a local recovery code and explicitly
+confirm it was saved. `POST /api/self/github/vault` stores a version-4 wrapped
+vault only if the account is active, GitHub-bound, and has neither an existing
+vault nor any memory rows. It never overwrites a vault, even after an abandoned
+registration is resumed. The existing password settings add a password later.
+
+Schema version 6 adds provider bindings and ephemeral grants only. Back up DEV
+before upgrading; rollback uses the previous image and the pre-upgrade database
+snapshot because older servers reject newer schemas. Production deployment
+requires the user's completed DEV acceptance.
+
 ## CLI authorization and TOTP management
 
 CLI browser sign-in uses the OAuth device grant: form-encoded `POST /oauth/device/code`

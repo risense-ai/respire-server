@@ -1609,6 +1609,7 @@ name = "respire_service"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",
@@ -1628,6 +1629,7 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "tokio",
+ "ureq",
  "url",
  "uuid",
 ]

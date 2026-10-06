@@ -2,6 +2,7 @@
 
 mod browser;
 mod device_auth;
+mod github_auth;
 pub(crate) mod db;
 pub(crate) mod migrations;
 pub(crate) mod resolutions;

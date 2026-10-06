@@ -10,6 +10,9 @@ pub(super) fn unauthenticated(
     path: &str,
     body: &str,
 ) -> Option<(u16, String)> {
+    if let Some(reply) = super::github::route(repo, method, path, body, None) {
+        return Some(reply);
+    }
     match (method, path) {
         ("POST", "/oauth/device/code") => {
             let Some(input) = oauth_form(body) else { return Some(json(400, serde_json::json!({"error":"invalid_request"}))); };
@@ -52,6 +55,9 @@ pub(super) fn unauthenticated(
             };
             if parsed.user.trim().is_empty() || parsed.pass_hash.trim().is_empty() {
                 return Some(json(400, serde_json::json!({"error": "user/pass_hash required"})));
+            }
+            if parsed.user.trim().starts_with("github-") {
+                return Some(json(400, serde_json::json!({"error": "reserved user name"})));
             }
             if parsed.device_name.as_deref().is_some_and(|name| name.trim().is_empty() || name.len() > 128) {
                 return Some(json(400, serde_json::json!({"error": "device_name must contain 1-128 bytes"})));

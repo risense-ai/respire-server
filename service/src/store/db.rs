@@ -183,6 +183,10 @@ impl BlobRepo {
         if disabled != 0 {
             return Err(anyhow!("disabled"));
         }
+        // Empty hashes mark provider-only accounts, never valid password credentials.
+        if stored_hash.is_empty() || pass_hash.is_empty() {
+            return Ok(None);
+        }
         if stored_hash == pass_hash {
             Ok(Some(token))
         } else {
