@@ -10,6 +10,9 @@ pub(super) fn unauthenticated(
     path: &str,
     body: &str,
 ) -> Option<(u16, String)> {
+    if let Some(reply) = super::github::route(repo, method, path, body, None) {
+        return Some(reply);
+    }
     match (method, path) {
         ("POST", "/oauth/device/code") => {
             let Some(input) = oauth_form(body) else { return Some(json(400, serde_json::json!({"error":"invalid_request"}))); };

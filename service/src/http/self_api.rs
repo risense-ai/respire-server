@@ -13,6 +13,9 @@ pub(super) fn route(
     user: &str,
     token: &str,
 ) -> Option<(u16, String)> {
+    if let Some(reply) = super::github::route(repo, method, path, body, Some(user)) {
+        return Some(reply);
+    }
     if let Some(code) = path.strip_prefix("/api/self/cli-authorization/") {
         if code.len()!=12 || !code.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Some(json(400, serde_json::json!({"error":"invalid authorization code"})));

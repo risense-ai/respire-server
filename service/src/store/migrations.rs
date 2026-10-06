@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use postgres::{Client, Transaction};
 
-pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 5;
+pub(crate) const CURRENT_SCHEMA_VERSION: i32 = 6;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
@@ -44,6 +44,9 @@ fn migrate_in_transaction(tx: &mut Transaction<'_>) -> Result<()> {
     }
     if stored < 5 {
         tx.batch_execute(include_str!("device_auth_schema.sql"))?;
+    }
+    if stored < 6 {
+        tx.batch_execute(include_str!("github_auth_schema.sql"))?;
     }
     seed_default_super_admin(tx)?;
     set_version(tx, CURRENT_SCHEMA_VERSION)?;

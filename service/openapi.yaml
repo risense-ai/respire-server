@@ -14,6 +14,88 @@ servers:
   - url: http://127.0.0.1:8787
     description: Local development server.
 paths:
+  /oauth/github/start:
+    post:
+      summary: Start ten-minute GitHub authorization with PKCE
+      responses:
+        "200":
+          description: Browser must save and compare state, expiry and its original hash route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GithubStart' }
+        "503": { description: GitHub is not configured }
+  /oauth/github/exchange:
+    post:
+      summary: Consume a GitHub grant and sign in or register by immutable GitHub ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GithubExchange' }
+      responses:
+        "200": { description: User session or totp_required ticket. Vault recovery stays local. }
+        "400": { description: Invalid, expired or replayed state }
+        "409": { description: Disabled/deleted account or name conflict; never merge accounts }
+        "502": { description: GitHub denied or exchange failed; restart authorization }
+  /api/self/github:
+    get:
+      summary: Read your GitHub binding status
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: bound with optional numeric id and current login }
+  /api/self/github/start:
+    post:
+      summary: Start owner-bound GitHub linking
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Ten-minute owner-bound browser grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GithubStart' }
+        "403": { description: Readonly session }
+        "503": { description: GitHub is not configured }
+  /api/self/github/exchange:
+    post:
+      summary: Consume your grant and link an unbound GitHub identity
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GithubExchange' }
+      responses:
+        "200": { description: bound, numeric id and login; session is unchanged }
+        "400": { description: Invalid, expired, replayed or wrong-owner grant }
+        "409": { description: Either identity is already bound }
+        "502": { description: GitHub exchange failed }
+  /api/self/github/unbind:
+    post:
+      summary: Unlink GitHub without signing out or changing encrypted data
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: bound is false; existing sessions remain valid }
+        "409": { description: Set a login password before removing the sole login method }
+  /api/self/github/vault:
+    post:
+      summary: Initialize a GitHub account's version-4 vault exactly once
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kdf_salt, wrapped_urk, urk_nonce, version]
+              properties:
+                kdf_salt: { type: string, pattern: '^[0-9a-fA-F]{32}$' }
+                wrapped_urk: { type: string, pattern: '^[0-9a-fA-F]{96}$' }
+                urk_nonce: { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+                version: { type: integer, enum: [4] }
+      responses:
+        "200": { description: Initial vault stored; no plaintext recovery code accepted }
+        "400": { description: Invalid wrapped vault }
+        "409": { description: Preserve existing vault/memories or account is unavailable }
   /oauth/device/code:
     post:
       summary: Start OAuth device authorization for the public Respire CLI
@@ -329,6 +411,20 @@ paths:
       responses:
         "200": { description: Stored }
 components:
+  schemas:
+    GithubStart:
+      type: object
+      required: [state, authorization_uri, expires_in]
+      properties:
+        state: { type: string, pattern: '^[0-9a-f]{64}$' }
+        authorization_uri: { type: string, format: uri }
+        expires_in: { type: integer, enum: [600] }
+    GithubExchange:
+      type: object
+      required: [state, code]
+      properties:
+        state: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+        code: { type: string, minLength: 1, maxLength: 512 }
   securitySchemes:
     bearerAuth:
       type: http
