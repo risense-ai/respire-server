@@ -26,7 +26,9 @@ database, frontend response, URL, or logs. No repository/email scope is requeste
 Identity uses GitHub's numeric ID, never email or mutable login name. Existing
 bindings return the same Respire account and still require `/login/totp` when
 TOTP is enabled. New identities create `github-{id}` accounts without a password;
-username conflicts reject rather than merge. Dashboard sign-in requires local
+the `github-` namespace is reserved at public registration, and pre-existing
+username conflicts reject rather than merge. Empty stored hashes disable the
+password login path entirely. Dashboard sign-in requires local
 vault recovery-code validation before replacing the browser account. CLI/TUI
 keep `#/authorize?code=...`, require explicit browser approval, then prompt for
 the recovery code in the terminal. GitHub never decrypts a vault.

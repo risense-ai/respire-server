@@ -55,6 +55,35 @@ mod tests {
         let user = reply["user"].as_str().context("user")?;
         let token = reply["token"].as_str().context("token")?;
         assert!(reply["created"].as_bool().context("created")?);
+        assert!(repo.login_session(user, "", None)?.is_none());
+        assert!(repo
+            .login_session(user, "nonempty-hash", Some("attacker"))?
+            .is_none());
+        assert_eq!(
+            crate::http::handle_full(
+                &repo,
+                "POST",
+                "/login",
+                &json!({"user":user,"pass_hash":""}).to_string(),
+                None,
+                None
+            )
+            .0,
+            401
+        );
+        assert_eq!(
+            crate::http::handle_full(
+                &repo,
+                "POST",
+                "/register",
+                r#"{"user":"github-456","pass_hash":"attacker-hash"}"#,
+                None,
+                None
+            )
+            .0,
+            400
+        );
+        assert!(!repo.exists_user("github-456"));
         assert!(!repo.unbind_github(user)?);
         let salt = "ab".repeat(16);
         let wrapped = "cd".repeat(48);
