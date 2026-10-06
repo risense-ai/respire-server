@@ -34,7 +34,12 @@ mod tests {
         repo.register("u", "hash", "salt")?;
         // This database belongs only to this test. Reconstruct the pre-v2 schema.
         repo.lock().batch_execute(
-            "DROP TABLE sync_resolutions,sync_heads,sync_versions,sync_accounts;
+            "DROP TABLE sync_resolutions,sync_heads,sync_versions,sync_accounts,
+                github_authorizations,github_identities,cli_authorizations,ops_daily_stats;
+            DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
+            DROP TRIGGER ops_session_insert ON sessions; DROP FUNCTION record_ops_insert();
+            DELETE FROM schema_meta WHERE k='ops_stats_started_at';
+            ALTER TABLE sessions DROP COLUMN readonly;
             ALTER TABLE mail_outbox DROP COLUMN status, DROP COLUMN attempts,
                 DROP COLUMN next_attempt_at, DROP COLUMN expires_at, DROP COLUMN attempted_at,
                 DROP COLUMN sent_at, DROP COLUMN last_error, DROP COLUMN code_id;
