@@ -275,7 +275,12 @@ mod tests {
         let (repo, epoch, _) = setup()?;
         let cursor = repo.pull("u", None)?.1;
         // Reconstruct the actual version-2 schema, including the pre-worker email table.
-        repo.lock().batch_execute("DROP TABLE sync_resolutions;
+        repo.lock().batch_execute("DROP TABLE sync_resolutions,
+            github_authorizations,github_identities,cli_authorizations,ops_daily_stats;
+            DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
+            DROP TRIGGER ops_session_insert ON sessions; DROP FUNCTION record_ops_insert();
+            DELETE FROM schema_meta WHERE k='ops_stats_started_at';
+            ALTER TABLE sessions DROP COLUMN readonly;
             ALTER TABLE sync_accounts DROP COLUMN resolution_rev;
             ALTER TABLE mail_outbox DROP COLUMN status, DROP COLUMN attempts,
                 DROP COLUMN next_attempt_at, DROP COLUMN expires_at, DROP COLUMN attempted_at,

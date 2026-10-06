@@ -271,3 +271,25 @@ source or workflow definitions.
 `scripts/read-dev-mail.py` remains available for backend/external acceptance
 commands. The Site console also carries its historical copy. Neither helper is
 run by normal Server PR checks.
+
+## Daily operations statistics (schema 7)
+
+`GET /admin/stats?days=N` requires owner/admin credentials; viewers receive 403,
+missing credentials 401. `days` defaults to 30 and accepts integers 7–90 only.
+The response includes `days`, `timezone: "Asia/Shanghai"`, `memory_tracking_since`,
+`historical_baseline: "retained_registrations_and_sessions"` and ascending `series`
+entries containing `date`, `registrations`, `memories`, `sessions`.
+
+Anonymous daily insert counters use Shanghai boundaries and survive later edits,
+logout and soft/hard deletion. Memories count the first live cloud blob insert by
+server receipt time; client LWW timestamps never determine creation time. Prior
+memory history is unavailable (`null`, not zero). Historical registration/session
+totals cover records retained at upgrade, not previously purged events. Known days
+without events are zero-filled. Triggers update counters in the original insert
+transaction, so duplicate upserts and rolled-back transactions do not add events.
+
+Schema 5 remains CLI authorization and schema 6 remains GitHub authorization.
+Schema 7 adds the aggregate table, tracking marker and insert triggers without
+rewriting accounts, auth settings, ciphertext or sync history. Back up and rehearse
+6→7 on an isolated copy. Older binaries refuse schema 7; rollback requires restoring
+the pre-upgrade database backup and its matching API image together.

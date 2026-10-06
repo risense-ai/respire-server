@@ -378,6 +378,72 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         Ok(())
     }
 
+    /// GET /admin/stats: owner gets an ascending series (default 30 points), out-of-range days → 400, viewer → 403.
+    #[test]
+    fn admin_stats_series_days_range_and_roles() -> Result<()> {
+        let repo = repo()?;
+        register_user(&repo, "alice")?;
+        let salt = derive_auth_salt("admin")?;
+        let hash = derive_pass_hash("admin", &salt).context("required")?;
+        let login = format!(r#"{{"user":"admin","pass_hash":"{hash}"}}"#);
+        let (_, reply) = handle(&repo, "POST", "/admin/login", &login, None);
+        let owner_tok = serde_json::from_str::<serde_json::Value>(&reply).context("required")?["token"]
+            .as_str()
+            .context("required")?
+            .to_owned();
+
+        let (status, reply) = handle(&repo, "GET", "/admin/stats", "", Some(&owner_tok));
+        assert_eq!(status, 200, "{reply}");
+        let v: serde_json::Value = serde_json::from_str(&reply)?;
+        assert_eq!(v["days"], 30);
+        assert_eq!(v["timezone"], "Asia/Shanghai");
+        assert!(v["memory_tracking_since"].as_str().is_some());
+        assert_eq!(v["historical_baseline"], "retained_registrations_and_sessions");
+        let series = v["series"].as_array().context("series array")?;
+        assert_eq!(series.len(), 30);
+        let mut dates: Vec<&str> = Vec::with_capacity(series.len());
+        for p in series {
+            dates.push(p["date"].as_str().context("date")?);
+        }
+        assert!(dates.windows(2).all(|w| w[0] < w[1]));
+        assert!(series.iter().all(|p| {
+            p.get("registrations").is_some() && p.get("memories").is_some() && p.get("sessions").is_some()
+        }));
+
+        for days in ["3", "365", "0", "-7", "abc", "7.5", "", "4294967296"] {
+            let (status, _) = handle(&repo, "GET", &format!("/admin/stats?days={days}"), "", Some(&owner_tok));
+            assert_eq!(status, 400, "days={days}");
+        }
+        let (status, reply) = handle(&repo, "GET", "/admin/stats?days=7", "", Some(&owner_tok));
+        assert_eq!(status, 200, "{reply}");
+        let v: serde_json::Value = serde_json::from_str(&reply)?;
+        assert_eq!(v["days"], 7);
+        assert_eq!(v["series"].as_array().context("series array")?.len(), 7);
+        let (status, reply) = handle(&repo, "GET", "/admin/stats?days=90", "", Some(&owner_tok));
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&reply)?["days"], 90);
+
+        let salt_v = derive_auth_salt("viewer-stats")?;
+        let hash_v = derive_pass_hash("viewer-pass", &salt_v).context("required")?;
+        let create_viewer = format!(
+            r#"{{"user":"viewer-stats","pass_hash":"{hash_v}","salt":"{salt_v}","role":"viewer"}}"#
+        );
+        let (status, _) = handle(&repo, "POST", "/admin/admins", &create_viewer, Some(&owner_tok));
+        assert_eq!(status, 200);
+        let login_viewer = format!(r#"{{"user":"viewer-stats","pass_hash":"{hash_v}"}}"#);
+        let (_, reply) = handle(&repo, "POST", "/admin/login", &login_viewer, None);
+        let viewer_tok = serde_json::from_str::<serde_json::Value>(&reply).context("required")?["token"]
+            .as_str()
+            .context("required")?
+            .to_owned();
+        let (status, _) = handle(&repo, "GET", "/admin/stats", "", Some(&viewer_tok));
+        assert_eq!(status, 403);
+        // unauthenticated stays 401 (router-level check)
+        let (status, _) = handle(&repo, "GET", "/admin/stats", "", None);
+        assert_eq!(status, 401);
+        Ok(())
+    }
+
     /// Admin rotate and revoke: rotate kills the old token; revoke deletes the account and its ciphertext.
     #[test]
     fn admin_rotate_and_revoke() -> Result<()> {

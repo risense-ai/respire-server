@@ -14,6 +14,41 @@ servers:
   - url: http://127.0.0.1:8787
     description: Local development server.
 paths:
+  /admin/stats:
+    get:
+      summary: Anonymous daily insert totals in Asia/Shanghai (owner or admin only)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 7, maximum: 90, default: 30 }
+      responses:
+        "200":
+          description: Memory counts start at schema 7; historical registrations/sessions cover retained records at upgrade. Later deletion never reduces these event totals.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [days, timezone, memory_tracking_since, historical_baseline, series]
+                properties:
+                  days: { type: integer }
+                  timezone: { type: string, enum: [Asia/Shanghai] }
+                  memory_tracking_since: { type: string, format: date }
+                  historical_baseline: { type: string, enum: [retained_registrations_and_sessions] }
+                  series:
+                    type: array
+                    items:
+                      type: object
+                      required: [date, registrations, memories, sessions]
+                      properties:
+                        date: { type: string, format: date }
+                        registrations: { type: integer, minimum: 0 }
+                        memories: { type: integer, minimum: 0, nullable: true, description: First live blob inserted on the server; null before tracking started. }
+                        sessions: { type: integer, minimum: 0 }
+        "400": { description: days is not an integer in 7–90 }
+        "401": { description: Missing or invalid admin credentials }
+        "403": { description: Viewer cannot read operations statistics }
+        "503": { description: Database unavailable }
   /oauth/github/start:
     post:
       summary: Start ten-minute GitHub authorization with PKCE

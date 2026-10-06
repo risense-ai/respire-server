@@ -302,6 +302,49 @@ impl BlobRepo {
         }))
     }
 
+    /// Anonymous insert totals; old memory creation dates are unknown, not zero.
+    pub(crate) fn daily_stats(&self, days: u32) -> Result<serde_json::Value> {
+        let today = (chrono::Utc::now() + chrono::Duration::hours(8)).date_naive();
+        self.daily_stats_until(days, today)
+    }
+
+    fn daily_stats_until(&self, days: u32, today: chrono::NaiveDate) -> Result<serde_json::Value> {
+        let days = days.max(1);
+        let start = today - chrono::Duration::days(days as i64 - 1);
+        let mut counts: std::collections::HashMap<String, [i64; 3]> = std::collections::HashMap::new();
+        let tracking_since = {
+            let mut client = self.lock();
+            for row in client.query(
+                "SELECT day::text, registrations, memories, sessions FROM ops_daily_stats
+                 WHERE day >= $1::text::date AND day <= $2::text::date ORDER BY day",
+                &[&start.to_string(), &today.to_string()],
+            )? {
+                counts.insert(row.get(0), [row.get(1), row.get(2), row.get(3)]);
+            }
+            let timestamp: String = client.query_one(
+                "SELECT v FROM schema_meta WHERE k='ops_stats_started_at'", &[],
+            )?.get(0);
+            (chrono::DateTime::parse_from_rfc3339(&timestamp)? + chrono::Duration::hours(8)).date_naive()
+        };
+        let mut series = Vec::with_capacity(days as usize);
+        let mut date = start;
+        while date <= today {
+            let key = date.format("%Y-%m-%d").to_string();
+            let c = counts.get(&key).copied().unwrap_or([0, 0, 0]);
+            series.push(serde_json::json!({
+                "date": key,
+                "registrations": c[0],
+                "memories": if date < tracking_since { None } else { Some(c[1]) },
+                "sessions": c[2],
+            }));
+            date += chrono::Duration::days(1);
+        }
+        Ok(serde_json::json!({
+            "days": days, "timezone": "Asia/Shanghai", "memory_tracking_since": tracking_since.to_string(),
+            "historical_baseline": "retained_registrations_and_sessions", "series": series,
+        }))
+    }
+
     pub(crate) fn list_users_filtered(&self, q: &str, page: u32, limit: u32, status: &str) -> Result<(Vec<serde_json::Value>, i64)> {
         let limit = limit.clamp(1, 100) as i64;
         let page = page.max(1) as i64;
@@ -1951,6 +1994,78 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0]["device_name"], "laptop");
         assert!(repo.list_user_sessions("ghost").context("required")?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn daily_stats_buckets_by_shanghai_day_and_zero_fills() -> Result<()> {
+        let repo = repo()?;
+        // UTC 15:59 = Shanghai 23:59 same day; UTC 16:30 = Shanghai 00:30 next day.
+        repo.lock().batch_execute(
+            "INSERT INTO users (\"user\", pass_hash, salt, token, created_at) VALUES
+                ('u-early','h','s','t1','2026-09-01T15:59:00.000Z'),
+                ('u-late','h','s','t2','2026-09-01T16:30:00.000Z');
+             INSERT INTO sessions (id, \"user\", token_hash, device_name, created_at)
+                VALUES ('s1','u-early','th1','d','2026-09-01T15:59:00.000Z');",
+        )?;
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 9, 2).context("required")?;
+        let stats = repo.daily_stats_until(7, today)?;
+        let series = stats["series"].as_array().context("series array")?;
+        assert_eq!(series.len(), 7);
+        assert_eq!(series[0]["date"], "2026-08-27");
+        assert_eq!(series[5]["date"], "2026-09-01");
+        assert_eq!(series[6]["date"], "2026-09-02");
+        assert_eq!(series[5]["registrations"], 1);
+        assert_eq!(series[6]["registrations"], 1);
+        assert!(series[6]["memories"].is_null());
+        assert!(series[5]["memories"].is_null());
+        assert_eq!(series[5]["sessions"], 1);
+        assert_eq!(series[6]["sessions"], 0);
+        for p in &series[..5] {
+            assert_eq!(p["registrations"], 0);
+            assert!(p["memories"].is_null());
+            assert_eq!(p["sessions"], 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn daily_stats_counts_first_server_receipt_and_survives_edits_and_deletion() -> Result<()> {
+        let repo = repo()?;
+        let (s, h) = hash("gone", "pass-1234")?;
+        repo.register("gone", &h, &s).context("required")?;
+        repo.put("gone", &mem("m1", "2026-09-02T00:00:00.000Z", "aa")).context("required")?;
+        repo.put("gone", &mem("m1", "2026-09-02T00:00:00.000Z", "aa"))?;
+        repo.put("gone", &mem("m1", "2026-09-02T00:30:00.000Z", "edited"))?;
+        // A client timestamp is not a server receipt date and cannot break statistics.
+        repo.lock().batch_execute("UPDATE blobs SET updated_at='not-a-timestamp' WHERE id='m1'")?;
+        let mut tombstone = mem("m1", "2026-09-02T01:00:00.000Z", "aa");
+        tombstone.deleted = true;
+        repo.put("gone", &tombstone).context("required")?;
+        repo.set_deleted("gone", true)?;
+        let stats = repo.daily_stats(7)?;
+        let series = stats["series"].as_array().context("series array")?;
+        let current = series.last().context("current day")?;
+        assert_eq!(current["registrations"], 1);
+        assert_eq!(current["memories"], 1);
+        assert_eq!(current["sessions"], 0);
+        repo.lock().batch_execute("DELETE FROM blobs; DELETE FROM sessions; DELETE FROM users")?;
+        assert_eq!(repo.daily_stats(7)?, stats, "anonymous totals survive hard deletion");
+        Ok(())
+    }
+
+    #[test]
+    fn daily_stats_rollback_and_first_tombstone_do_not_increment() -> Result<()> {
+        let repo = repo()?;
+        let before = repo.daily_stats(7)?;
+        {
+            let mut client = repo.lock();
+            let mut tx = client.transaction()?;
+            tx.batch_execute("INSERT INTO blobs (\"user\",id,updated_at) VALUES ('fixture','rollback','invalid')")?;
+            tx.rollback()?;
+            client.batch_execute("INSERT INTO blobs (\"user\",id,deleted,updated_at) VALUES ('fixture','tombstone',1,'invalid')")?;
+        }
+        assert_eq!(repo.daily_stats(7)?, before);
         Ok(())
     }
 }

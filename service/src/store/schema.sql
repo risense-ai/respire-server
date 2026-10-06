@@ -26,8 +26,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     readonly INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions("user");
--- Backfill column on existing DBs (CREATE IF NOT EXISTS does not add columns to live tables)
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS readonly INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS blobs (
     "user" TEXT NOT NULL,

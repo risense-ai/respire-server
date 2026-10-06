@@ -1,3 +1,8 @@
+-- sessions.readonly shipped without a recorded migration: existing databases
+-- received it from the baseline ALTER that this migration replaces. IF NOT EXISTS
+-- keeps it a no-op for fresh databases, whose baseline already creates the column.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS readonly INTEGER NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS cli_authorizations (
     device_hash TEXT PRIMARY KEY,
     user_code TEXT NOT NULL UNIQUE,

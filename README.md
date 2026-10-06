@@ -38,6 +38,12 @@ All frontend source, browser tests and builds live in [respire-site](https://git
 
 ## Endpoint ownership and staged deployment
 
+Admin daily operations statistics use schema 7 and owner/admin-only
+`GET /admin/stats?days=30`. Memory totals start at first server receipt after
+tracking is enabled; editing or deleting records never rewrites historical totals.
+Earlier memory counts are unknown, while historical registrations and sessions
+cover records retained at upgrade. See the [producer browser contract](docs/browser-api-contract.md).
+
 | Host | Owner | Target surface |
 |---|---|---|
 | `https://rsrs.rs` | `respire-site` | Homepage |
