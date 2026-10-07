@@ -165,6 +165,19 @@ impl BlobRepo {
         Ok(Some(token))
     }
 
+    /// Salts are public authentication parameters; changing a brand must never
+    /// change the hash used to verify an existing password.
+    pub(crate) fn authentication_salt(&self, user: &str, admin: bool) -> Result<String> {
+        let query = if admin {
+            "SELECT salt FROM super_admins WHERE \"user\"=$1"
+        } else { "SELECT salt FROM users WHERE \"user\"=$1" };
+        let row = self.lock().query_opt(query, &[&user])?;
+        match row {
+            Some(row) => Ok(row.get(0)),
+            None => respire::memory::crypto::derive_auth_salt(user),
+        }
+    }
+
     pub(crate) fn login(&self, user: &str, pass_hash: &str) -> Result<Option<String>> {
         let row = self.lock().query_opt(
             r#"SELECT pass_hash, token, disabled, deleted FROM users WHERE "user"=$1"#,
@@ -1274,13 +1287,13 @@ fn row_blob(user: &str, row: &Row) -> StoredMemory {
 }
 
 pub(crate) fn connect_url() -> Result<String> {
-    std::env::var("DATABASE_URL").map_err(|_| anyhow!("DATABASE_URL is unset (cloud requires Postgres)"))
+    crate::env::var("DATABASE_URL").map_err(|_| anyhow!("DATABASE_URL is unset (cloud requires Postgres)"))
 }
 
 /// Test helper: create a throwaway database on the DATABASE_URL instance.
 #[cfg(test)]
 pub(crate) fn connect_unique() -> Result<BlobRepo> {
-    let base = std::env::var("DATABASE_URL").context("DATABASE_URL required for tests")?;
+    let base = crate::env::var("DATABASE_URL").context("DATABASE_URL required for tests")?;
     let mut admin = Client::connect(&base, NoTls).context("connect postgres")?;
     let name = format!("t{}", uuid::Uuid::new_v4().simple());
     admin

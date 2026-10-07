@@ -266,8 +266,8 @@ impl BlobRepo {
             version == 4
                 && salt.len() == 32
                 && nonce.len() == 24
-                && wrapped.len() == 96
-                && [salt, wrapped, nonce]
+                && wrapped.strip_prefix("rsrs:v1:").unwrap_or(wrapped).len() == 96
+                && [salt, wrapped.strip_prefix("rsrs:v1:").unwrap_or(wrapped), nonce]
                     .iter()
                     .all(|s| s.bytes().all(|b| b.is_ascii_hexdigit())),
             "invalid initial vault"

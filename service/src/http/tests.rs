@@ -1340,8 +1340,8 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
     impl Drop for DataDirGuard {
         fn drop(&mut self) {
             match &self.0 {
-                Some(v) => std::env::set_var("ONEMEMORY_DATA_DIR", v),
-                None => std::env::remove_var("ONEMEMORY_DATA_DIR"),
+                Some(v) => std::env::set_var("RSRS_DATA_DIR", v),
+                None => std::env::remove_var("RSRS_DATA_DIR"),
             }
         }
     }
@@ -1353,7 +1353,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             // HTTP fixtures must not write the developer's OS credential store.
             keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
         });
-        (guard, DataDirGuard(std::env::var("ONEMEMORY_DATA_DIR").ok()))
+        (guard, DataDirGuard(std::env::var("RSRS_DATA_DIR").ok()))
     }
 
     fn spawn_live(url: String) -> Result<String> {
@@ -1370,11 +1370,11 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
 
     fn use_dir(path: &std::path::Path) -> Result<()> {
         std::fs::create_dir_all(path)?;
-        std::env::set_var("ONEMEMORY_DATA_DIR", path);
+        std::env::set_var("RSRS_DATA_DIR", path);
         Ok(())
     }
 
-    /// CLI over real HTTP: register/login/vault v3/new-device unlock, then push-pull ciphertext.
+    /// CLI over real HTTP: current vault/new-device unlock, then push-pull ciphertext.
     #[test]
     fn cli_http_register_login_vault_push_pull() -> Result<()> {
         let _lock = lock_cli_env();
@@ -1406,7 +1406,6 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             .to_owned();
 
         let keys = respire::auth::load_local_session().context("required")?;
-        let data_key = respire::memory::crypto::derive_subkey(&keys.urk, b"onememory:data:v1")?;
         let payload = serde_json::json!({
             "kind": "context",
             "tags": "",
@@ -1419,7 +1418,8 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             "updated_at": "2026-09-11T00:00:00.000Z",
         })
         .to_string();
-        let (nonce, ciphertext) = respire::memory::crypto::encrypt_item(&data_key, &payload).context("required")?;
+        let (nonce, ciphertext) = keys.encrypt_content(&payload).context("required")?;
+        assert!(ciphertext.starts_with(respire::memory::crypto::RSRS_PREFIX));
         let mut blob = respire::StoredMemory::new_pending(
             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
             "alice".into(),
@@ -1467,10 +1467,9 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         assert!(issued.is_none());
         let sess_b = respire::auth::read_session_json().context("required")?;
         assert!(!sess_b.as_object().context("required")?.contains_key("secret_key"), "v4 must not store the plaintext key in session");
-        let keys_b = std::env::set_var("ONEMEMORY_SUPER", &secret);
+        std::env::set_var("RSRS_SUPER", &secret);
         let keys_b = respire::auth::load_local_session().context("required")?;
-        std::env::remove_var("ONEMEMORY_SUPER");
-        let _ = keys_b;
+        std::env::remove_var("RSRS_SUPER");
         assert_eq!(keys_b.urk, keys.urk);
         let remote_b = respire::transport::remote::RemoteTransport::new(
             respire::transport::remote::RemoteConfig {
@@ -1484,21 +1483,15 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             .into_iter()
             .find(|m| m.id == blob.id)
             .context("required")?;
-        let data_key_b =
-            respire::memory::crypto::derive_subkey(&keys_b.urk, b"onememory:data:v1")?;
-        let plain = respire::memory::crypto::decrypt_item(
-            &data_key_b,
-            &pulled.ciphertext,
-            &pulled.nonce,
-        )
+        let plain = keys_b.decrypt_content(&pulled.ciphertext, &pulled.nonce)
         .context("required")?;
         assert!(plain.contains("regression memory"));
         Ok(())
     }
 
-    /// Legacy vault v2 (super password only) upgrades to v3 on CLI login and issues a Secret Key.
+    /// Ordinary login preserves an old v2 vault and its original super Key.
     #[test]
-    fn cli_http_v2_vault_upgrades_to_v3() -> Result<()> {
+    fn cli_http_v2_vault_preserves_original_factors() -> Result<()> {
         let _lock = lock_cli_env();
         let root = tempfile::tempdir().context("required")?;
         let super_pass = "super-pass";
@@ -1519,6 +1512,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             let (status, _) = handle(&repo, "POST", "/api/self/vault", &body, Some(&token));
             assert_eq!(status, 200);
         }
+        let original_vault = repo.get_vault("bob")?.context("original v2 vault missing")?;
         let base = spawn_live(repo.url.clone())?;
         use_dir(&root.path().join("dev-v2"))?;
         let issued = respire::service::login(
@@ -1530,16 +1524,18 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             false,
         )
         .context("required")?;
-        let secret = issued.context("v2 login must issue a super password")?;
+        assert!(issued.is_none(), "ordinary login must not issue a replacement super Key");
         let sess = respire::auth::read_session_json().context("required")?;
-        assert_eq!(sess["vault_version"].as_i64(), Some(4));
+        assert_eq!(sess["vault_version"].as_i64(), Some(2));
+        assert_eq!(repo.get_vault("bob")?.context("v2 vault missing after login")?, original_vault);
 
         use_dir(&root.path().join("dev-v2-new"))?;
-        respire::service::login(&base, "bob", "pass-1234", Some(&secret), None, false).context("required")?;
+        assert!(respire::service::login(&base, "bob", "pass-1234", Some(super_pass), None, false)?.is_none());
         assert_eq!(
             respire::auth::read_session_json().context("required")?["vault_version"].as_i64(),
-            Some(4)
+            Some(2)
         );
+        assert_eq!(repo.get_vault("bob")?.context("v2 vault missing after recovery")?, original_vault);
         Ok(())
     }
 
@@ -1576,9 +1572,9 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             false,
         )
         .context("required")?;
-        // headless bypass: ONEMEMORY_SUPER unlocks when no keyring is present
-        std::env::set_var("ONEMEMORY_SUPER", &secret);
+        // headless bypass: RSRS_SUPER unlocks when no keyring is present
+        std::env::set_var("RSRS_SUPER", &secret);
         respire::auth::load_local_session().context("required")?;
-        std::env::remove_var("ONEMEMORY_SUPER");
+        std::env::remove_var("RSRS_SUPER");
         Ok(())
     }

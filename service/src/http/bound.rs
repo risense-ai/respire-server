@@ -77,9 +77,9 @@ pub(crate) fn serve_with_ready(
     let limits = Limits::from_env()?;
     let cors = Cors::from_env()?;
     // postgres::Client owns a blocking runtime: open it before entering Tokio.
-    let workers=std::env::var("ONEMEMORY_DB_WORKERS").ok()
+    let workers=crate::env::var("RSRS_DB_WORKERS").ok()
         .map(|v|v.parse::<usize>()).transpose()?.unwrap_or(4);
-    if !(1..=16).contains(&workers) {anyhow::bail!("ONEMEMORY_DB_WORKERS must be 1..16");}
+    if !(1..=16).contains(&workers) {anyhow::bail!("RSRS_DB_WORKERS must be 1..16");}
     let mut repos=Vec::with_capacity(workers);
     for _ in 1..workers {repos.push(BlobRepo::connect(&repo.url)?);}
     repos.push(repo);
@@ -94,19 +94,19 @@ pub(crate) fn serve_with_ready(
 
 impl Limits {
     fn from_env() -> Result<Self> {
-        let max_body_bytes = env_positive_u64("ONEMEMORY_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?;
-        let header_ms = env_positive_u64("ONEMEMORY_HEADER_TIMEOUT_MS", DEFAULT_HEADER_TIMEOUT_MS)?;
-        let body_ms = env_positive_u64("ONEMEMORY_BODY_TIMEOUT_MS", DEFAULT_BODY_TIMEOUT_MS)?;
+        let max_body_bytes = env_positive_u64("RSRS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?;
+        let header_ms = env_positive_u64("RSRS_HEADER_TIMEOUT_MS", DEFAULT_HEADER_TIMEOUT_MS)?;
+        let body_ms = env_positive_u64("RSRS_BODY_TIMEOUT_MS", DEFAULT_BODY_TIMEOUT_MS)?;
         let connection_ms =
-            env_positive_u64("ONEMEMORY_CONNECTION_TIMEOUT_MS", DEFAULT_CONNECTION_TIMEOUT_MS)?;
-        let max_connections = env_positive_u64("ONEMEMORY_MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS)?;
+            env_positive_u64("RSRS_CONNECTION_TIMEOUT_MS", DEFAULT_CONNECTION_TIMEOUT_MS)?;
+        let max_connections = env_positive_u64("RSRS_MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS)?;
         let max_body_bytes = usize::try_from(max_body_bytes)
-            .map_err(|_| anyhow::anyhow!("ONEMEMORY_MAX_BODY_BYTES exceeds platform usize"))?;
+            .map_err(|_| anyhow::anyhow!("RSRS_MAX_BODY_BYTES exceeds platform usize"))?;
         let max_connections = usize::try_from(max_connections)
-            .map_err(|_| anyhow::anyhow!("ONEMEMORY_MAX_CONNECTIONS exceeds platform usize"))?;
+            .map_err(|_| anyhow::anyhow!("RSRS_MAX_CONNECTIONS exceeds platform usize"))?;
         if max_connections > Semaphore::MAX_PERMITS {
             return Err(anyhow::anyhow!(
-                "ONEMEMORY_MAX_CONNECTIONS exceeds Semaphore::MAX_PERMITS ({})",
+                "RSRS_MAX_CONNECTIONS exceeds Semaphore::MAX_PERMITS ({})",
                 Semaphore::MAX_PERMITS
             ));
         }
@@ -133,7 +133,7 @@ async fn serve_async(
     for (index,repo) in repos.into_iter().enumerate() {
         let admin_for_db=admin_token.map(str::to_owned);
         let rx=Arc::clone(&db_rx);
-        std::thread::Builder::new().name(format!("onememory-db-{index}"))
+        std::thread::Builder::new().name(format!("rsrs-db-{index}"))
             .spawn(move || db_worker(repo,admin_for_db,rx))?;
     }
 
@@ -157,7 +157,7 @@ async fn serve_async(
     println!("register: POST /register {{user, pass_hash, salt}} -> token");
     println!("frontend assets: respire-site; this process serves only the HTTP API");
     if admin_token.is_some() {
-        println!("super-admin: super_admins table + ONEMEMORY_ADMIN_TOKEN");
+        println!("super-admin: super_admins table + RSRS_ADMIN_TOKEN");
     } else {
         println!("super-admin: super_admins table (env token unset)");
     }
@@ -582,7 +582,7 @@ fn safe_log(raw: &str) -> String {
 }
 
 fn env_positive_u64(name: &str, default: u64) -> Result<u64> {
-    match std::env::var(name) {
+    match crate::env::var(name) {
         Err(std::env::VarError::NotPresent) => Ok(default),
         Err(std::env::VarError::NotUnicode(_)) => {
             Err(anyhow::anyhow!("{name} is not valid UTF-8"))

@@ -43,7 +43,7 @@ jobs:
           mkdir artifact
           printf '%s\n' "$GITHUB_SHA" > artifact/server-sha.txt
           docker build -f service/Dockerfile \
-            --build-arg "RESPIRE_BUILD_REVISION=$GITHUB_SHA" \
+            --build-arg "RSRS_BUILD_REVISION=$GITHUB_SHA" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             -t "respire-server:$GITHUB_SHA" .
           docker save "respire-server:$GITHUB_SHA" | gzip > artifact/server-image.tar.gz

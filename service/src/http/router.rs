@@ -9,7 +9,7 @@ use super::public::{public_route, ready_version};
 use super::self_api;
 use super::sync;
 
-/// Route entry. admin_token is optional ONEMEMORY_ADMIN_TOKEN;
+/// Route entry. admin_token is optional RSRS_ADMIN_TOKEN;
 /// /admin/* accepts that value or super_admins.token. POST /admin/login is open.
 pub(crate) fn handle_full(
     repo: &BlobRepo,
@@ -31,6 +31,17 @@ pub(crate) fn handle_full(
         return match repo.ready() {
             Ok(()) => json(200, serde_json::json!({"ok": true, "database": "ready", "version": ready_version()})),
             Err(_) => json(503, serde_json::json!({"ok": false, "error": "database unavailable or schema mismatch"})),
+        };
+    }
+    if method == "GET" && path == "/auth/salt" {
+        let parameters: std::collections::HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+        let user = parameters.get("user").map(String::as_str).unwrap_or("").trim();
+        if user.is_empty() || user.len() > 256 {
+            return json(400, serde_json::json!({"error":"user required"}));
+        }
+        return match repo.authentication_salt(user, parameters.get("kind").map(String::as_str) == Some("admin")) {
+            Ok(salt) => json(200, serde_json::json!({"salt":salt})),
+            Err(error) => super::json::server_error(error),
         };
     }
     if let Some(reply) = auth::unauthenticated(repo, method, path, body) {

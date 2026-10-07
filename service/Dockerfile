@@ -4,8 +4,8 @@
 
 FROM rust:1.95.0-trixie AS builder
 # CI supplies an exact verified checkout SHA. Ad-hoc builds remain unknown.
-ARG RESPIRE_BUILD_REVISION=unknown
-ENV RESPIRE_BUILD_REVISION=$RESPIRE_BUILD_REVISION
+ARG RSRS_BUILD_REVISION=unknown
+ENV RSRS_BUILD_REVISION=$RSRS_BUILD_REVISION
 WORKDIR /src
 
 RUN apt-get update \
@@ -13,14 +13,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
-ENV RESPIRE_CORE_SDK_DIR=/src/.sdk/x86_64-unknown-linux-gnu
+ENV RSRS_CORE_SDK_DIR=/src/.sdk/x86_64-unknown-linux-gnu
 RUN node scripts/fetch-core-sdk.mjs x86_64-unknown-linux-gnu
 RUN cargo build --release --locked -p respire_service --bin respire-server \
     && mkdir -p /out/bin \
     && cp target/release/respire-server /out/bin/respire-server \
     && node scripts/stage-core-runtime.mjs /out/bin \
     && mkdir -p /out/runtime \
-    && cp -a "$RESPIRE_CORE_SDK_DIR/runtime/." /out/runtime/
+    && cp -a "$RSRS_CORE_SDK_DIR/runtime/." /out/runtime/
 
 FROM debian:trixie-slim
 RUN apt-get update \
@@ -36,7 +36,7 @@ COPY --from=builder /out/bin/core-notices /usr/share/doc/respire-core
 COPY --from=builder /out/runtime /usr/local/lib
 RUN ldconfig
 
-ENV ONEMEMORY_DATA_DIR=/data
+ENV RSRS_DATA_DIR=/data
 
 USER respire
 WORKDIR /data

@@ -134,7 +134,7 @@ paths:
   /oauth/device/code:
     post:
       summary: Start OAuth device authorization for the public Respire CLI
-      description: RFC 8628 device grant. The dashboard origin comes from RESPIRE_DASHBOARD_URL, defaulting to https://dash.rsrs.rs. Development deployments must set their own dashboard origin.
+      description: RFC 8628 device grant. The dashboard origin comes from RSRS_DASHBOARD_URL, defaulting to https://dash.rsrs.rs. Development deployments must set their own dashboard origin.
       requestBody:
         required: true
         content:
@@ -293,6 +293,25 @@ paths:
           description: Schema reachable
         "503":
           description: Database unavailable
+  /auth/salt:
+    get:
+      summary: Read the password authentication salt without changing credentials
+      security: []
+      parameters:
+        - { name: user, in: query, required: true, schema: { type: string, maxLength: 256 } }
+        - { name: kind, in: query, schema: { type: string, enum: [user, admin], default: user } }
+      responses:
+        "200":
+          description: Stored salt or the default for an unregistered identity; clients use the returned value for password hashing
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [salt]
+                properties:
+                  salt: { type: string }
+        "400": { description: Invalid user }
+        "503": { description: Database unavailable }
   /register:
     post:
       summary: Create account and session

@@ -29,7 +29,7 @@ fail() {
   exit 1
 }
 
-"${COMPOSE[@]}" exec -T db pg_dump -U "${RESPIRE_DATABASE_USER:-respire}" -d "${RESPIRE_DATABASE_NAME:-respire}" -Fc >"$TMP" || fail "pg_dump"
+"${COMPOSE[@]}" exec -T db pg_dump -U "${RSRS_DATABASE_USER-${ONEMEMORY_DATABASE_USER-${RESPIRE_DATABASE_USER-respire}}}" -d "${RSRS_DATABASE_NAME-${ONEMEMORY_DATABASE_NAME-${RESPIRE_DATABASE_NAME-respire}}}" -Fc >"$TMP" || fail "pg_dump"
 test -s "$TMP" || fail "empty dump"
 "${COMPOSE[@]}" exec -T db pg_restore --list <"$TMP" >/dev/null || fail "pg_restore --list"
 mv -f "$TMP" "$OUT"

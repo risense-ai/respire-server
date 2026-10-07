@@ -48,8 +48,8 @@ jobs:
           docker run --rm --name "$TST" --network "$NET" \
             -v "$PWD":/src:ro -w /src \
             -e CARGO_TARGET_DIR=/tmp/target \
-            -e RESPIRE_CORE_TEST_MODE=1 -e RUST_TEST_THREADS=1 \
-            -e RESPIRE_CORE_SDK_DIR=/tmp/core-sdk \
+            -e RSRS_CORE_TEST_MODE=1 -e RUST_TEST_THREADS=1 \
+            -e RSRS_CORE_SDK_DIR=/tmp/core-sdk \
             -e DATABASE_URL=postgres://postgres@pg:5432/postgres \
             -v respire-ci-cargo-registry:/usr/local/cargo/registry \
             -v respire-ci-cargo-git:/usr/local/cargo/git \
@@ -107,16 +107,16 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git diff --exit-code
           git diff --cached --exit-code
-          docker build -f service/Dockerfile --build-arg "RESPIRE_BUILD_REVISION=$GITHUB_SHA" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "respire-server:ci-${GITHUB_RUN_ID}" -t "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" .
+          docker build -f service/Dockerfile --build-arg "RSRS_BUILD_REVISION=$GITHUB_SHA" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "respire-server:ci-${GITHUB_RUN_ID}" -t "ghcr.io/risense-ai/respire-server:ci-${GITHUB_RUN_ID}" .
 
       - name: Compose smoke checks for health and persistent storage
         env:
-          ONEMEMORY_SERVER_IMAGE: respire-server:ci-${{ github.run_id }}
-          ONEMEMORY_HOST_BIND: 127.0.0.1
-          ONEMEMORY_HOST_PORT: "0"
-          ONEMEMORY_ADMIN_TOKEN: ci-smoke-token-not-a-secret
+          RSRS_SERVER_IMAGE: respire-server:ci-${{ github.run_id }}
+          RSRS_HOST_BIND: 127.0.0.1
+          RSRS_HOST_PORT: "0"
+          RSRS_ADMIN_TOKEN: ci-smoke-token-not-a-secret
           POSTGRES_PASSWORD: ci-smoke-pg
-          RESPIRE_CORS_ALLOWED_ORIGINS: https://dashboard.ci.invalid,https://admin.ci.invalid
+          RSRS_CORS_ALLOWED_ORIGINS: https://dashboard.ci.invalid,https://admin.ci.invalid
         run: |
           set -euo pipefail
           COMPOSE=(docker compose --project-name "respire-ci-${GITHUB_RUN_ID}" -f compose.yaml)

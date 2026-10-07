@@ -6,14 +6,14 @@ use hyper::header::{
     ACCESS_CONTROL_REQUEST_METHOD, ORIGIN, VARY,
 };
 use hyper::{HeaderMap, Response, Uri};
-const ENV: &str = "RESPIRE_CORS_ALLOWED_ORIGINS";
+const ENV: &str = "RSRS_CORS_ALLOWED_ORIGINS";
 #[derive(Clone, Default)]
 pub(super) struct Cors {
     origins: Vec<HeaderValue>,
 }
 impl Cors {
     pub(super) fn from_env() -> Result<Self> {
-        match std::env::var(ENV) {
+        match crate::env::var(ENV) {
             Ok(value) => Self::parse(&value),
             Err(std::env::VarError::NotPresent) => Ok(Self::default()),
             Err(std::env::VarError::NotUnicode(_)) => bail!("{ENV} is not valid UTF-8"),

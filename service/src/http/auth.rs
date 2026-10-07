@@ -20,7 +20,7 @@ pub(super) fn unauthenticated(
             let device = input.get("device_name").map(String::as_str).unwrap_or("CLI");
             let user = input.get("expected_user").map(String::as_str).unwrap_or("");
             if device.trim().is_empty() || device.len()>128 || user.len()>256 { return Some(json(400, serde_json::json!({"error":"invalid_request"}))); }
-            let dashboard = std::env::var("RESPIRE_DASHBOARD_URL").unwrap_or_else(|_| "https://dash.rsrs.rs".to_owned());
+            let dashboard = crate::env::var("RSRS_DASHBOARD_URL").unwrap_or_else(|_| "https://dash.rsrs.rs".to_owned());
             let Ok(dashboard) = url::Url::parse(&dashboard) else { return Some(server_error(anyhow::anyhow!("invalid dashboard origin"))); };
             let loopback = matches!(dashboard.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
             if !(dashboard.scheme()=="https" || dashboard.scheme()=="http" && loopback) || !dashboard.username().is_empty() || dashboard.password().is_some() || dashboard.path()!="/" || dashboard.query().is_some() || dashboard.fragment().is_some() {

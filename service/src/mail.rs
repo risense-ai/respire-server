@@ -17,14 +17,14 @@ struct Sender {
 impl Sender {
     fn from_env() -> Result<Option<Self>> {
         let keys = [
-            "RESPIRE_SMTP_HOST",
-            "RESPIRE_SMTP_USERNAME",
-            "RESPIRE_SMTP_PASSWORD",
-            "RESPIRE_MAIL_FROM",
+            "RSRS_SMTP_HOST",
+            "RSRS_SMTP_USERNAME",
+            "RSRS_SMTP_PASSWORD",
+            "RSRS_MAIL_FROM",
         ];
         let values: Vec<String> = keys
             .iter()
-            .map(|key| std::env::var(key).unwrap_or_default())
+            .map(|key| crate::env::var(key).unwrap_or_default())
             .collect();
         if values.iter().all(|value| value.is_empty()) {
             return Ok(None);
@@ -35,14 +35,14 @@ impl Sender {
                 "{key} is required when SMTP is enabled"
             );
         }
-        let port = std::env::var("RESPIRE_SMTP_PORT")
+        let port = crate::env::var("RSRS_SMTP_PORT")
             .unwrap_or_else(|_| "587".into())
             .parse::<u16>()
-            .context("RESPIRE_SMTP_PORT must be 465 or 587")?;
+            .context("RSRS_SMTP_PORT must be 465 or 587")?;
         let builder = match port {
             465 => SmtpTransport::relay(&values[0]),
             587 => SmtpTransport::starttls_relay(&values[0]),
-            _ => anyhow::bail!("RESPIRE_SMTP_PORT must be 465 or 587"),
+            _ => anyhow::bail!("RSRS_SMTP_PORT must be 465 or 587"),
         }
         .context("invalid SMTP TLS host")?;
         Ok(Some(Self {
@@ -51,7 +51,7 @@ impl Sender {
                 .timeout(Some(Duration::from_secs(15)))
                 .credentials(Credentials::new(values[1].clone(), values[2].clone()))
                 .build(),
-            from: values[3].parse().context("invalid RESPIRE_MAIL_FROM")?,
+            from: values[3].parse().context("invalid RSRS_MAIL_FROM")?,
         }))
     }
 
