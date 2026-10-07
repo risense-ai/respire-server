@@ -23,6 +23,7 @@ mod sync;
 
 pub(crate) use bound::{check_config, serve as serve_bound};
 pub(crate) use public::public_route;
+#[cfg(test)]
 pub(crate) use router::handle_full;
 pub(crate) use crate::store::BlobRepo;
 #[cfg(test)]

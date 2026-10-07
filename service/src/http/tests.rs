@@ -1022,18 +1022,27 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
     #[test]
     fn vault_stores_version() -> Result<()> {
         let repo = repo()?;
-        let (token, _, _) = register_user(&repo, "vera")?;
-        let (status, _) = handle(
-            &repo,
-            "POST",
-            "/api/self/vault",
-            r#"{"kdf_salt":"aabbccddeeff0011","wrapped_urk":"aa","urk_nonce":"bb","version":3}"#,
-            Some(&token),
-        );
-        assert_eq!(status, 200);
-        let (status, reply) = handle(&repo, "GET", "/api/self/vault", "", Some(&token));
-        assert_eq!(status, 200, "{reply}");
-        assert!(reply.contains("\"version\":3") || reply.contains("\"version\": 3"));
+        let (token, auth_salt, pass_hash) = register_user(&repo, "vera")?;
+        for version in [1, 3] {
+            let vault = serde_json::json!({
+                "kdf_salt":"aabbccddeeff0011", "wrapped_urk":format!("rsrs:v1:{}", "aa".repeat(48)),
+                "urk_nonce":"bb".repeat(12), "version":version
+            });
+            let (status, reply) = super::router::handle_conditional(&repo, "POST",
+                "/api/self/vault", &vault.to_string(), Some(&token), None, version == 1);
+            assert_eq!(status, 200, "{reply}");
+            let competing = serde_json::json!({"kdf_salt":"aabbccddeeff0011",
+                "wrapped_urk":"different-opaque-key", "urk_nonce":"different-nonce", "version":1});
+            assert_eq!(super::router::handle_conditional(&repo, "POST", "/api/self/vault",
+                &competing.to_string(), Some(&token), None, true).0, 412);
+            assert_eq!(super::router::handle_conditional(&repo, "POST", "/api/self/vault",
+                &competing.to_string(), None, None, true).0, 401);
+            let (status, reply) = handle(&repo, "GET", "/api/self/vault", "", Some(&token));
+            assert_eq!(status, 200, "{reply}");
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&reply)?, vault);
+            assert_eq!(repo.authentication_salt("vera", false)?, auth_salt);
+            assert!(repo.login("vera", &pass_hash)?.is_some());
+        }
         Ok(())
     }
 

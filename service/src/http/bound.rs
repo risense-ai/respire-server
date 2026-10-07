@@ -2,7 +2,7 @@
 //!
 //! One design: take a capacity permit on accept and share it via Arc with the
 //! connection task and the database task; release only after both finish.
-//! Request bodies are capped on async I/O. `handle_full` runs on a bounded
+//! Request bodies are capped on async I/O. The router runs on a bounded
 //! dedicated pool (Postgres). HTTP timeouts close the socket without dropping
 //! in-flight database work.
 
@@ -17,14 +17,14 @@ use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::Incoming;
-use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
+use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, IF_NONE_MATCH};
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
-use super::{cors::Cors, handle_full, public_route, BlobRepo};
+use super::{cors::Cors, router::handle_conditional, public_route, BlobRepo};
 
 const DEFAULT_MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_HEADER_TIMEOUT_MS: u64 = 10_000;
@@ -54,6 +54,7 @@ struct DbJob {
     route: String,
     body: String,
     token: Option<String>,
+    create_vault_only: bool,
     permit: Arc<OwnedSemaphorePermit>,
     reply: oneshot::Sender<(u16, String)>,
 }
@@ -211,13 +212,14 @@ fn db_worker(repo: BlobRepo, admin_token: Option<String>, rx: Arc<Mutex<Receiver
         };
         let Ok(job)=job else {return;};
         let _permit = job.permit;
-        let result = handle_full(
+        let result = handle_conditional(
             &repo,
             job.method,
             &job.route,
             &job.body,
             job.token.as_deref(),
             admin_token.as_deref(),
+            job.create_vault_only,
         );
         let _ = job.reply.send(result);
     }
@@ -310,6 +312,16 @@ async fn handle_api_request(
         Some(pq) => pq.as_str().to_owned(),
         None => path_only.clone(),
     };
+    let create_vault_only = if method == "POST" && path_only == "/api/self/vault" {
+        let mut values = req.headers().get_all(IF_NONE_MATCH).iter();
+        match (values.next(), values.next()) {
+            (None, None) => false,
+            (Some(value), None) if value.as_bytes() == b"*" => true,
+            _ => return Ok(build_response(400,
+                serde_json::json!({"error":"only a single If-None-Match: * is supported"}).to_string(),
+                "application/json")),
+        }
+    } else { false };
     let token = bearer_token(req.headers());
     let peer_s = safe_log(&peer.to_string());
     let path_s = safe_log(&path_only);
@@ -399,6 +411,7 @@ async fn handle_api_request(
         route,
         body,
         token,
+        create_vault_only,
         permit,
         reply: reply_tx,
     };

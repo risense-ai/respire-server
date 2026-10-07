@@ -11,6 +11,7 @@ use super::sync;
 
 /// Route entry. admin_token is optional RSRS_ADMIN_TOKEN;
 /// /admin/* accepts that value or super_admins.token. POST /admin/login is open.
+#[cfg(test)]
 pub(crate) fn handle_full(
     repo: &BlobRepo,
     method: &str,
@@ -18,6 +19,13 @@ pub(crate) fn handle_full(
     body: &str,
     req_token: Option<&str>,
     admin_token: Option<&str>,
+) -> (u16, String) {
+    handle_conditional(repo, method, path, body, req_token, admin_token, false)
+}
+
+pub(crate) fn handle_conditional(
+    repo: &BlobRepo, method: &str, path: &str, body: &str,
+    req_token: Option<&str>, admin_token: Option<&str>, create_vault_only: bool,
 ) -> (u16, String) {
     let (path, query) = path.split_once('?').unwrap_or((path, ""));
     if let Some(reply) = public_route(method, path) {
@@ -91,7 +99,7 @@ pub(crate) fn handle_full(
         }
     }
 
-    if let Some(reply) = self_api::route(repo, method, path, body, &user, token) {
+    if let Some(reply) = self_api::route(repo, method, path, body, &user, token, create_vault_only) {
         return reply;
     }
     sync::route(repo, method, path, query, body, &user)

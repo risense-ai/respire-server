@@ -1091,23 +1091,43 @@ impl BlobRepo {
         urk_nonce: &str,
         version: i64,
     ) -> Result<()> {
+        self.write_vault(user, kdf_salt, wrapped_urk, urk_nonce, version, false).map(|_| ())
+    }
+
+    /// Atomically initialize a missing vault without replacing concurrent key material.
+    pub(crate) fn create_vault(
+        &self, user: &str, kdf_salt: &str, wrapped_urk: &str, urk_nonce: &str, version: i64,
+    ) -> Result<bool> {
+        self.write_vault(user, kdf_salt, wrapped_urk, urk_nonce, version, true)
+    }
+
+    fn write_vault(
+        &self, user: &str, kdf_salt: &str, wrapped_urk: &str, urk_nonce: &str, version: i64,
+        create_only: bool,
+    ) -> Result<bool> {
         if kdf_salt.len() < 16 || wrapped_urk.is_empty() || urk_nonce.is_empty() {
             anyhow::bail!("invalid vault");
         }
-        if version < 2 || version > 4 {
+        // A legacy v1 wrap preserves the client's original password/Secret
+        // factors. The server stores it opaquely; only the client derives keys.
+        if version < 1 || version > 4 {
             anyhow::bail!("unsupported vault version");
         }
         let version = i32::try_from(version).map_err(|_| anyhow!("unsupported vault version"))?;
         let now = now_rfc();
-        self.lock().execute(
+        let statement = if create_only {
+            r#"INSERT INTO vault ("user", kdf_salt, wrapped_urk, urk_nonce, version, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("user") DO NOTHING"#
+        } else {
             r#"INSERT INTO vault ("user", kdf_salt, wrapped_urk, urk_nonce, version, updated_at)
                VALUES ($1,$2,$3,$4,$5,$6)
                ON CONFLICT ("user") DO UPDATE SET
                 kdf_salt=excluded.kdf_salt, wrapped_urk=excluded.wrapped_urk,
-                urk_nonce=excluded.urk_nonce, version=excluded.version, updated_at=excluded.updated_at"#,
+                urk_nonce=excluded.urk_nonce, version=excluded.version, updated_at=excluded.updated_at"#
+        };
+        Ok(self.lock().execute(statement,
             &[&user, &kdf_salt, &wrapped_urk, &urk_nonce, &version, &now],
-        )?;
-        Ok(())
+        )? > 0)
     }
 
     pub(crate) fn get_vault(&self, user: &str) -> Result<Option<serde_json::Value>> {
@@ -1701,7 +1721,16 @@ mod tests {
         assert!(repo.put_vault("fay", "short", "wrap", "nonce", 3).is_err());
         assert!(repo.put_vault("fay", "aabbccddeeff0011", "", "nonce", 3).is_err());
         assert!(repo.put_vault("fay", "aabbccddeeff0011", "wrap", "", 3).is_err());
-        assert!(repo.put_vault("fay", "aabbccddeeff0011", "wrap", "nonce", 1).is_err());
+        assert!(repo.put_vault("fay", "aabbccddeeff0011", "wrap", "nonce", 0).is_err());
+        let wrapped_v1 = format!("rsrs:v1:{}", "ab".repeat(48));
+        let nonce_v1 = "cd".repeat(12);
+        assert!(repo.create_vault("fay", "aabbccddeeff0011", &wrapped_v1, &nonce_v1, 1)?);
+        assert!(!repo.create_vault("fay", "aabbccddeeff0011", "other-key-wrap", "other-nonce", 1)?);
+        let v1 = repo.get_vault("fay")?.context("v1 vault missing")?;
+        assert_eq!(v1, serde_json::json!({"kdf_salt":"aabbccddeeff0011",
+            "wrapped_urk":wrapped_v1,"urk_nonce":nonce_v1,"version":1}));
+        assert_eq!(repo.authentication_salt("fay", false)?, sa);
+        assert!(repo.login("fay", &ha)?.is_some());
         assert!(repo.put_vault("fay", "aabbccddeeff0011", "wrap", "nonce", 5).is_err());
         assert!(repo.put_vault("fay", "aabbccddeeff0011", "wrap", "nonce", 4).is_ok());
         repo.put_vault("fay", "aabbccddeeff0011", "wrap-a", "nonce-a", 2).context("required")?;

@@ -12,6 +12,7 @@ pub(super) fn route(
     body: &str,
     user: &str,
     token: &str,
+    create_vault_only: bool,
 ) -> Option<(u16, String)> {
     if let Some(reply) = super::github::route(repo, method, path, body, Some(user)) {
         return Some(reply);
@@ -120,14 +121,16 @@ pub(super) fn route(
         let Ok(parsed) = serde_json::from_str::<VaultIn>(body) else {
             return Some(json(400, serde_json::json!({"error": "bad json"})));
         };
-        return Some(match repo.put_vault(
-            user,
-            parsed.kdf_salt.trim(),
-            parsed.wrapped_urk.trim(),
-            parsed.urk_nonce.trim(),
-            parsed.version,
-        ) {
-            Ok(()) => {
+        let result = if create_vault_only {
+            repo.create_vault(user, parsed.kdf_salt.trim(), parsed.wrapped_urk.trim(),
+                parsed.urk_nonce.trim(), parsed.version)
+        } else {
+            repo.put_vault(user, parsed.kdf_salt.trim(), parsed.wrapped_urk.trim(),
+                parsed.urk_nonce.trim(), parsed.version).map(|()| true)
+        };
+        return Some(match result {
+            Ok(false) => json(412, serde_json::json!({"error":"vault already exists; original key material preserved"})),
+            Ok(true) => {
                 let _ = repo.audit(user, "vault_put", user, "");
                 json(200, serde_json::json!({"ok": true}))
             }
