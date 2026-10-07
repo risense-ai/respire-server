@@ -1495,13 +1495,27 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         let _lock = lock_cli_env();
         let root = tempfile::tempdir().context("required")?;
         let super_pass = "super-pass";
+        // This HTTP/vault fixture verifies the existing headless login contract,
+        // not OS credential persistence. A dependency's Linux native backends
+        // cannot use this crate's mock keyring builder inside Docker.
+        struct SuperGuard(Option<std::ffi::OsString>);
+        impl Drop for SuperGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var("RSRS_SUPER", value),
+                    None => std::env::remove_var("RSRS_SUPER"),
+                }
+            }
+        }
+        let _super_env = SuperGuard(std::env::var_os("RSRS_SUPER"));
+        std::env::set_var("RSRS_SUPER", super_pass);
+        let original_urk = respire::memory::crypto::generate_key();
         let repo = repo()?;
         {
             let (token, _, _) = register_user(&repo, "bob")?;
             let salt = respire::memory::crypto::random_hex(16);
             let kek = respire::memory::crypto::derive_super_kek(super_pass, &salt).context("required")?;
-            let urk = respire::memory::crypto::generate_key();
-            let (nonce, wrapped) = respire::memory::crypto::wrap_key(&urk, &kek).context("required")?;
+            let (nonce, wrapped) = respire::memory::crypto::wrap_key(&original_urk, &kek).context("required")?;
             let body = serde_json::json!({
                 "kdf_salt": salt,
                 "wrapped_urk": wrapped,
@@ -1527,6 +1541,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
         assert!(issued.is_none(), "ordinary login must not issue a replacement super Key");
         let sess = respire::auth::read_session_json().context("required")?;
         assert_eq!(sess["vault_version"].as_i64(), Some(2));
+        assert_eq!(respire::auth::load_local_session()?.urk, original_urk);
         assert_eq!(repo.get_vault("bob")?.context("v2 vault missing after login")?, original_vault);
 
         use_dir(&root.path().join("dev-v2-new"))?;
@@ -1535,6 +1550,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
             respire::auth::read_session_json().context("required")?["vault_version"].as_i64(),
             Some(2)
         );
+        assert_eq!(respire::auth::load_local_session()?.urk, original_urk);
         assert_eq!(repo.get_vault("bob")?.context("v2 vault missing after recovery")?, original_vault);
         Ok(())
     }
