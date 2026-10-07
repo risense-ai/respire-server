@@ -175,17 +175,22 @@ fn transport_denies_untrusted_and_malformed_preflights() -> Result<()> {
 
 #[test]
 fn transport_preserves_auth_tokens_paths_and_all_handler_statuses() -> Result<()> {
-    for status in [200, 400, 401, 403, 429, 500, 503] {
-        let handler: Handler = Box::new(move |job| {
-            assert_eq!(job.method, "POST");
-            assert_eq!(job.route, "/api/self/profile?test=1");
-            assert_eq!(job.token.as_deref(), Some("synthetic-test-token"));
-            assert_eq!(job.body, "{}");
-            let _ = job.reply.send((status, "{\"fixture\":true}".into()));
-        });
-        let response = exchange(&request("POST", "/api/self/profile?test=1", "Origin: https://dash.rsrs.rs\r\nAuthorization: Bearer synthetic-test-token\r\nContent-Type: application/json\r\n", "{}"), Some(handler), 50)?;
-        assert_cors(&response, status, Some("https://dash.rsrs.rs"));
-        assert!(response.contains("{\"fixture\":true}"));
+    for (create_only, path, condition) in [(false, "/api/self/profile?test=1", ""),
+        (true, "/api/self/vault?test=1", "If-None-Match: *\r\n")] {
+        for status in [200, 400, 401, 403, 412, 429, 500, 503] {
+            let handler: Handler = Box::new(move |job| {
+                assert_eq!(job.method, "POST");
+                assert_eq!(job.route, path);
+                assert_eq!(job.token.as_deref(), Some("synthetic-test-token"));
+                assert_eq!(job.body, "{}");
+                assert_eq!(job.create_vault_only, create_only);
+                let _ = job.reply.send((status, "{\"fixture\":true}".into()));
+            });
+            let headers = format!("Origin: https://dash.rsrs.rs\r\nAuthorization: Bearer synthetic-test-token\r\nContent-Type: application/json\r\n{condition}");
+            let response = exchange(&request("POST", path, &headers, "{}"), Some(handler), 50)?;
+            assert_cors(&response, status, Some("https://dash.rsrs.rs"));
+            assert!(response.contains("{\"fixture\":true}"));
+        }
     }
     Ok(())
 }
@@ -210,6 +215,11 @@ fn transport_covers_body_limits_timeouts_and_worker_failure() -> Result<()> {
         408,
         Some("https://dash.rsrs.rs"),
     );
+    for condition in ["If-None-Match: quoted-tag\r\n", "If-None-Match: *\r\nIf-None-Match: *\r\n"] {
+        let headers = format!("Origin: https://dash.rsrs.rs\r\n{condition}");
+        assert_cors(&exchange(&request("POST", "/api/self/vault", &headers, "{}"), None, 50)?,
+            400, Some("https://dash.rsrs.rs"));
+    }
     let mut invalid = request("POST", "/login", "Origin: https://dash.rsrs.rs\r\n", "x");
     *invalid.last_mut().context("body byte")? = 0xff;
     assert_cors(
@@ -293,13 +303,14 @@ fn cors_with_database_preserves_user_admin_and_readonly_authorization() -> Resul
     ] {
         let db = BlobRepo::connect(&repo.url)?;
         let handler: Handler = Box::new(move |job| {
-            let result = handle_full(
+            let result = handle_conditional(
                 &db,
                 job.method,
                 &job.route,
                 &job.body,
                 job.token.as_deref(),
                 None,
+                job.create_vault_only,
             );
             let _ = job.reply.send(result);
         });

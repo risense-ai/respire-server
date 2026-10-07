@@ -461,9 +461,14 @@ paths:
         "200": { description: Vault fields }
     post:
       summary: Write wrapped vault material
+      description: Stores opaque vault versions 1 through 4 without changing password authentication or deriving client keys. Version 1 preserves legacy password and Account Secret factors; an explicit namespace migration can retain that version. If-None-Match '*' atomically creates only a missing vault; requests without that header preserve existing upsert behavior.
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: If-None-Match, in: header, schema: { type: string, enum: ['*'] }, description: Create only when no account vault exists }
       responses:
         "200": { description: Stored }
+        "400": { description: Invalid vault fields, version, or unsupported condition }
+        "412": { description: A vault already exists; its original key material was preserved }
 components:
   schemas:
     GithubStart:
