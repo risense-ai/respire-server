@@ -24,48 +24,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Legacy vault login verifies native credential persistence. Docker's
+    # keyctl restrictions do not satisfy that contract; run the unchanged
+    # complete test suite on the host with an isolated PostgreSQL service.
+    services:
+      postgres:
+        image: postgres:16-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RSRS_CORE_TEST_MODE: '1'
+      DATABASE_URL: postgres://postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-          clean: false
-      - name: Clean previous container build output
-        run: docker run --rm -v "$PWD":/w alpine:3.20 sh -c 'rm -rf /w/target /w/ci-out'
-      - name: Run service tests in isolated PostgreSQL and Rust containers
-        run: |
-          set -euo pipefail
-          NET="respire-ci-${GITHUB_RUN_ID}"
-          PG="respire-ci-pg-${GITHUB_RUN_ID}"
-          TST="respire-ci-test-${GITHUB_RUN_ID}"
-          docker network create "$NET"
-          docker run -d --name "$PG" --network "$NET" --network-alias pg \
-            -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=postgres \
-            postgres:16-bookworm
-          for _ in $(seq 1 30); do
-            docker exec "$PG" pg_isready -U postgres && break
-            sleep 1
-          done
-          docker run --rm --name "$TST" --network "$NET" \
-            -v "$PWD":/src:ro -w /src \
-            -e CARGO_TARGET_DIR=/tmp/target \
-            -e RSRS_CORE_TEST_MODE=1 -e RUST_TEST_THREADS=1 \
-            -e RSRS_CORE_SDK_DIR=/tmp/core-sdk \
-            -e DATABASE_URL=postgres://postgres@pg:5432/postgres \
-            -v respire-ci-cargo-registry:/usr/local/cargo/registry \
-            -v respire-ci-cargo-git:/usr/local/cargo/git \
-            rust:1.95.0-trixie \
-            bash -c 'set -euo pipefail
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update -qq
-              apt-get install -y -qq pkg-config libssl-dev nodejs >/dev/null
-              node scripts/fetch-core-sdk.mjs x86_64-unknown-linux-gnu
-              cargo test --locked -p respire_service -- --test-threads=4'
-      - name: Clean test containers
-        if: always()
-        run: |
-          docker rm -f "respire-ci-test-${GITHUB_RUN_ID}" || true
-          docker rm -f "respire-ci-pg-${GITHUB_RUN_ID}" || true
-          docker network rm "respire-ci-${GITHUB_RUN_ID}" || true
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare pinned binary Core SDK
+        run: node scripts/fetch-core-sdk.mjs x86_64-unknown-linux-gnu
+      - name: Run complete service tests with isolated PostgreSQL
+        run: cargo test --locked -p respire_service -- --test-threads=4
 
   image:
     name: docker image
