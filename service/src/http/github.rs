@@ -20,10 +20,10 @@ pub(super) fn check_config() -> Result<()> {
 
 impl Config {
     fn read() -> Result<Option<Self>> {
-        let client = std::env::var("RESPIRE_GITHUB_CLIENT_ID").unwrap_or_default();
-        let secret = std::env::var("RESPIRE_GITHUB_CLIENT_SECRET").unwrap_or_default();
-        let redirect = std::env::var("RESPIRE_GITHUB_REDIRECT_URI").unwrap_or_default();
-        let dashboard = std::env::var("RESPIRE_DASHBOARD_URL")
+        let client = crate::env::var("RSRS_GITHUB_CLIENT_ID").unwrap_or_default();
+        let secret = crate::env::var("RSRS_GITHUB_CLIENT_SECRET").unwrap_or_default();
+        let redirect = crate::env::var("RSRS_GITHUB_REDIRECT_URI").unwrap_or_default();
+        let dashboard = crate::env::var("RSRS_DASHBOARD_URL")
             .unwrap_or_else(|_| "https://dash.rsrs.rs".into());
         Self::parse(client, secret, redirect, &dashboard)
     }

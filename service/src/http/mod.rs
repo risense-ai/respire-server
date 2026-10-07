@@ -28,7 +28,7 @@ pub(crate) use crate::store::BlobRepo;
 #[cfg(test)]
 pub(crate) use bound::serve_with_ready;
 
-/// Start the service. Register/login yield a token; /admin/* accepts the super-admin table token or ONEMEMORY_ADMIN_TOKEN.
+/// Start the service. Register/login yield a token; /admin/* accepts the super-admin table token or RSRS_ADMIN_TOKEN.
 pub fn serve(bind: &str, database_url: &str, admin_token: Option<&str>) -> anyhow::Result<()> {
     check_config()?;
     let repo = crate::store::BlobRepo::connect(database_url)?;

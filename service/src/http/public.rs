@@ -3,7 +3,7 @@
 use super::json::{json, page_path};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const SOURCE_REVISION: &str = env!("RESPIRE_COMPILED_REVISION");
+const SOURCE_REVISION: &str = env!("RSRS_COMPILED_REVISION");
 
 /// Unauthenticated, DB-free routes. HTML pages are not served here.
 pub(crate) fn public_route(method: &str, path: &str) -> Option<(u16, String)> {

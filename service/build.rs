@@ -10,23 +10,23 @@ fn revision(value: Option<String>) -> Result<String, &'static str> {
     {
         Ok(value)
     } else {
-        Err("RESPIRE_BUILD_REVISION must be a full lowercase Git SHA or unknown")
+        Err("RSRS_BUILD_REVISION must be a full lowercase Git SHA or unknown")
     }
 }
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=RESPIRE_BUILD_REVISION");
-    let setting = match std::env::var("RESPIRE_BUILD_REVISION") {
+    println!("cargo:rerun-if-env-changed=RSRS_BUILD_REVISION");
+    let setting = match std::env::var("RSRS_BUILD_REVISION") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
         Err(std::env::VarError::NotUnicode(_)) => {
-            eprintln!("RESPIRE_BUILD_REVISION must be valid UTF-8");
+            eprintln!("RSRS_BUILD_REVISION must be valid UTF-8");
             std::process::exit(1);
         }
     };
     match revision(setting) {
-        Ok(value) => println!("cargo:rustc-env=RESPIRE_COMPILED_REVISION={value}"),
+        Ok(value) => println!("cargo:rustc-env=RSRS_COMPILED_REVISION={value}"),
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);

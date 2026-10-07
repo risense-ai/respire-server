@@ -27,14 +27,21 @@ Use Rust 1.95.0, Node.js and an SDK matching the target and the SHA-256 lock. Us
 ```bash
 git clone https://github.com/risense-ai/respire-server.git
 cd respire-server
-export RESPIRE_CORE_SDK_DIR=/path/to/validated-sdk
+export RSRS_CORE_SDK_DIR=/path/to/validated-sdk
 node scripts/fetch-core-sdk.mjs x86_64-pc-windows-msvc
 cargo check --workspace --locked
 ```
 
-For PostgreSQL integration tests, set `DATABASE_URL` to an isolated test instance whose user can create databases. Existing tests create databases named `t<uuid>`. Enable the explicit test provider with `RESPIRE_CORE_TEST_MODE=1` and run `cargo test --locked -p respire_service -- --test-threads=1`. No model download is needed for these tests.
+For PostgreSQL integration tests, set `DATABASE_URL` to an isolated test instance whose user can create databases. Existing tests create databases named `t<uuid>`. Enable the explicit test provider with `RSRS_CORE_TEST_MODE=1` and run `cargo test --locked -p respire_service -- --test-threads=1`. No model download is needed for these tests.
 
 All frontend source, browser tests and builds live in [respire-site](https://github.com/risense-ai/respire-site): homepage, Dashboard and Admin. This repository contains API processes only. Cloud browser requests use the explicit HTTPS API base and bearer tokens; see the [producer browser contract](docs/browser-api-contract.md). Browser search filters decrypted text; semantic retrieval remains local to Core.
+
+The cloud `serve` command does not initialize a model or decrypt memories. The
+independent loopback `access` command is a local infrastructure host: it resolves
+the selected library database, reads model files and supplies authorized memory
+records and model bytes to Core through the app SDK. Core performs inference and
+private memory policies in memory; it does not open files, databases or directories.
+Opaque derived index bytes are interpreted by Core and persisted by the host.
 
 ## Endpoint ownership and staged deployment
 
@@ -58,13 +65,13 @@ this sequence. `deploy/nginx-api.conf.example` is a generic template; substitute
 your own domain, certificate paths and upstream port in private host configuration.
 
 Copy `.env.example` to `.env`, provide a random PostgreSQL password and select a
-validated API image. Set `RESPIRE_CORS_ALLOWED_ORIGINS` to the exact trusted browser
+validated API image. Set `RSRS_CORS_ALLOWED_ORIGINS` to the exact trusted browser
 origins before Pages acceptance. It is empty by default. Cloud CORS supports
 `GET`, `POST`, `Authorization` and `Content-Type`; it does not enable cookies or
 change bearer/role authorization. See [configuration and acceptance](docs/browser-api-contract.md).
 
-Set `RESPIRE_DASHBOARD_URL` to the Dashboard for the selected API environment
-before starting the API. For DEV, set `RESPIRE_DASHBOARD_URL=https://dash.dev.rsrs.rs`
+Set `RSRS_DASHBOARD_URL` to the Dashboard for the selected API environment
+before starting the API. For DEV, set `RSRS_DASHBOARD_URL=https://dash.dev.rsrs.rs`
 in the private `.env` or `deployment.env`; production uses `https://dash.rsrs.rs`.
 The generic example and Compose fallback are production values, so a DEV setup
 must override them. Verify that `/oauth/device/code` returns a verification link
@@ -103,8 +110,8 @@ Only homepage, Dashboard and Admin frontend source remain in `respire-site`.
 
 ## Transactional email
 
-Configure `RESPIRE_SMTP_HOST`, `RESPIRE_SMTP_USERNAME`, `RESPIRE_SMTP_PASSWORD` and
-`RESPIRE_MAIL_FROM` through the deployment environment. `RESPIRE_SMTP_PORT` defaults
+Configure `RSRS_SMTP_HOST`, `RSRS_SMTP_USERNAME`, `RSRS_SMTP_PASSWORD` and
+`RSRS_MAIL_FROM` through the deployment environment. `RSRS_SMTP_PORT` defaults
 to 587 with mandatory STARTTLS; 465 uses implicit TLS. Use the authenticated mailbox
 as the sender unless the provider explicitly permits aliases. Never commit passwords.
 

@@ -6,10 +6,10 @@ builds set the public `VITE_API_BASE_URL` to the chosen HTTPS API origin, normal
 
 ## GitHub sign-in and account linking
 
-Configure `RESPIRE_GITHUB_CLIENT_ID`, `RESPIRE_GITHUB_CLIENT_SECRET` and
-`RESPIRE_GITHUB_REDIRECT_URI` only on the API server. Use separate DEV and
+Configure `RSRS_GITHUB_CLIENT_ID`, `RSRS_GITHUB_CLIENT_SECRET` and
+`RSRS_GITHUB_REDIRECT_URI` only on the API server. Use separate DEV and
 production apps. The exact callback is the HTTPS dashboard root with a trailing
-slash, matching `RESPIRE_DASHBOARD_URL`; wildcard callbacks are not supported.
+slash, matching `RSRS_DASHBOARD_URL`; wildcard callbacks are not supported.
 Empty configuration disables GitHub sign-in; partial or mismatched configuration
 fails startup. No provider secret belongs in frontend variables.
 
@@ -61,7 +61,7 @@ five seconds to the client's interval. Approval creates a normal revocable user
 session once; denial, expiration and replay do not create sessions. Device codes
 are private and are stored only as hashes. Access tokens never enter URLs.
 
-The verification origin is server-owned `RESPIRE_DASHBOARD_URL`, defaulting to
+The verification origin is server-owned `RSRS_DASHBOARD_URL`, defaulting to
 `https://dash.rsrs.rs`; DEV must set `https://dash.dev.rsrs.rs`. The Dashboard
 route `/#/authorize` accepts a displayed user code; `/#/authorize?code=...`
 prefills it. After normal password and TOTP sign-in, the page shows the account,
@@ -86,7 +86,7 @@ returns an explicit failure rather than silently falling back to password login.
 `GET /health` returns the existing `ok`, `service`, and `version` fields plus
 `source_revision`. Official image workflows first verify checkout `HEAD` equals
 `GITHUB_SHA` and tracked source is clean, then pass that full SHA as the
-`RESPIRE_BUILD_REVISION` Docker build argument. `service/build.rs` validates it
+`RSRS_BUILD_REVISION` Docker build argument. `service/build.rs` validates it
 and compiles it into the binary; changing runtime environment variables cannot
 alter the reported revision. Ad-hoc builds with no provenance are explicitly
 `unknown` and must fail strict hosted release acceptance. The Docker image smoke
@@ -100,7 +100,7 @@ pipeline, not a claim of externally signed artifact attestation.
 
 ## Cross-origin contract
 
-`RESPIRE_CORS_ALLOWED_ORIGINS` is a comma-separated list of **exact serialized
+`RSRS_CORS_ALLOWED_ORIGINS` is a comma-separated list of **exact serialized
 origins**, without a trailing slash. It is empty by default. For the production
 Dashboard/Admin hostnames the intended value is:
 
@@ -250,7 +250,7 @@ gate. This is removal of a misplaced frontend dependency, not a Site-checkout
 adapter or a waiver of CLI/API release checks.
 
 The CLI `scripts/dev-api-coverage.json` still pins `server_source_sha`; its API
-smoke runner checks that against `RESPIRE_DEV_SERVER_SHA`. Review and refresh that
+smoke runner checks that against `RSRS_DEV_SERVER_SHA`. Review and refresh that
 API coverage contract when advancing the development API revision. Keep this
 exact API source gate; do not replace it with a frontend revision or bypass it.
 The API/mailbox acceptance helper also stays with CLI API acceptance.

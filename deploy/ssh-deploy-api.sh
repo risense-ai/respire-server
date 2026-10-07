@@ -14,8 +14,8 @@ artifact=$(realpath "$5")
 [[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die 'Invalid Compose project'
 [[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && (( api_port <= 65535 )) || die 'Invalid API port'
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid server revision'
-database_user=${RESPIRE_DATABASE_USER:-respire}
-database_name=${RESPIRE_DATABASE_NAME:-respire}
+database_user=${RSRS_DATABASE_USER-${ONEMEMORY_DATABASE_USER-${RESPIRE_DATABASE_USER-respire}}}
+database_name=${RSRS_DATABASE_NAME-${ONEMEMORY_DATABASE_NAME-${RESPIRE_DATABASE_NAME-respire}}}
 for required in .env .migration-verified compose.yaml; do
   [[ -f "$directory/$required" ]] || die "Missing prepared deployment prerequisite: $required"
 done
@@ -28,10 +28,10 @@ flock -n 9 || die 'Another API deployment or rollback is in progress'
 [[ ! -f "$directory/api-deployment-incomplete" ]] || die "Resolve the previous interrupted/failed attempt first: $(cat "$directory/api-deployment-incomplete")/ROLLBACK.md"
 
 # Shell variables take precedence over Compose env files. Own only API variables.
-unset ONEMEMORY_SERVER_IMAGE
-export ONEMEMORY_HOST_BIND=127.0.0.1 ONEMEMORY_HOST_PORT="$api_port"
+unset RSRS_SERVER_IMAGE ONEMEMORY_SERVER_IMAGE RESPIRE_SERVER_IMAGE
+export RSRS_HOST_BIND=127.0.0.1 RSRS_HOST_PORT="$api_port"
 base=(docker compose --project-name "$project" --project-directory "$directory" --env-file "$directory/.env")
-mail_file=${RESPIRE_API_MAIL_ENV_FILE:-}
+mail_file=${RSRS_API_MAIL_ENV_FILE-${ONEMEMORY_API_MAIL_ENV_FILE-${RESPIRE_API_MAIL_ENV_FILE-}}}
 if [[ -n "$mail_file" ]]; then
   [[ "$mail_file" == /* && -f "$mail_file" ]] || die 'Mail env file must be an existing absolute path'
   mail_file=$(realpath "$mail_file")
@@ -129,9 +129,17 @@ same_env() {
 same_env "$directory/.env" "$release/previous/base.env"
 same_env "$directory/deployment.env" "$release/previous/deployment.env"
 same_env "$(cat "$release/mail-env-path.txt")" "$release/previous/mail.env"
-export ONEMEMORY_SERVER_IMAGE="$(cat "$release/previous/server-image-id.txt")"
-export ONEMEMORY_HOST_BIND=127.0.0.1 ONEMEMORY_HOST_PORT="$api_port"
-docker image inspect "$ONEMEMORY_SERVER_IMAGE" >/dev/null
+export RSRS_SERVER_IMAGE="$(cat "$release/previous/server-image-id.txt")"
+export RSRS_HOST_BIND=127.0.0.1 RSRS_HOST_PORT="$api_port"
+# A frozen pre-namespace Compose reads ONEMEMORY_* directly. Only that
+# snapshot needs legacy overrides, including persisted overrides after rollback.
+legacy_compose=0
+if grep -Eq '\$\{ONEMEMORY_(SERVER_IMAGE|HOST_BIND|HOST_PORT)' "$release/previous/compose.yaml"; then
+  legacy_compose=1
+  export ONEMEMORY_SERVER_IMAGE="$RSRS_SERVER_IMAGE"
+  export ONEMEMORY_HOST_BIND="$RSRS_HOST_BIND" ONEMEMORY_HOST_PORT="$RSRS_HOST_PORT"
+fi
+docker image inspect "$RSRS_SERVER_IMAGE" >/dev/null
 compose=(docker compose --project-name "$project" --project-directory "$directory" --env-file "$release/previous/base.env")
 for env_file in mail.env deployment.env api-deployment.env; do
   if [[ -f "$release/previous/$env_file" ]]; then compose+=(--env-file "$release/previous/$env_file"); fi
@@ -147,7 +155,10 @@ curl -fsS --max-time 10 "http://127.0.0.1:$api_port/ready"
 install -m 600 "$release/previous/compose.yaml" "$directory/compose-api.yaml"
 {
   if [[ -f "$release/previous/api-deployment.env" ]]; then cat "$release/previous/api-deployment.env"; fi
-  printf '\nONEMEMORY_SERVER_IMAGE=%s\nONEMEMORY_HOST_BIND=127.0.0.1\nONEMEMORY_HOST_PORT=%s\n' "$ONEMEMORY_SERVER_IMAGE" "$api_port"
+  printf '\nRSRS_SERVER_IMAGE=%s\nRSRS_HOST_BIND=127.0.0.1\nRSRS_HOST_PORT=%s\n' "$RSRS_SERVER_IMAGE" "$api_port"
+  if [[ "$legacy_compose" == 1 ]]; then
+    printf 'ONEMEMORY_SERVER_IMAGE=%s\nONEMEMORY_HOST_BIND=127.0.0.1\nONEMEMORY_HOST_PORT=%s\n' "$RSRS_SERVER_IMAGE" "$api_port"
+  fi
 } > "$directory/api-deployment.env.rollback"
 mv "$directory/api-deployment.env.rollback" "$directory/api-deployment.env"
 if [[ -f "$release/previous/current-api-revision" ]]; then
@@ -174,7 +185,7 @@ printf '%s\n' "$image_id" > "$release/server-image-id.txt"
 install -m 600 compose-api.yaml "$release/compose-api.yaml"
 install -m 600 server-sha.txt "$release/server-sha.txt"
 # Pin the loaded image ID: a later docker load cannot silently move this deployment.
-printf 'ONEMEMORY_SERVER_IMAGE=%s\nONEMEMORY_HOST_BIND=127.0.0.1\nONEMEMORY_HOST_PORT=%s\n' "$image_id" "$api_port" > "$release/api-deployment.env"
+printf 'RSRS_SERVER_IMAGE=%s\nRSRS_HOST_BIND=127.0.0.1\nRSRS_HOST_PORT=%s\n' "$image_id" "$api_port" > "$release/api-deployment.env"
 next=("${base[@]}" --env-file "$release/api-deployment.env" -f "$release/compose-api.yaml")
 "${next[@]}" config --quiet
 printf '%s\n' "$release" > "$directory/api-deployment-incomplete"

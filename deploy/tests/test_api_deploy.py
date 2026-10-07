@@ -23,8 +23,9 @@ import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["STUB_LOG"], "a") as out:
     out.write(json.dumps({"tool": "docker", "args": args,
-        "image": os.environ.get("ONEMEMORY_SERVER_IMAGE"),
-        "web": os.environ.get("ONEMEMORY_WEB_IMAGE")}) + "\n")
+        "image": os.environ.get("RSRS_SERVER_IMAGE"),
+        "legacy_image": os.environ.get("ONEMEMORY_SERVER_IMAGE"),
+        "web": os.environ.get("RSRS_WEB_IMAGE")}) + "\n")
 if args[0] == "load":
     sys.stdin.buffer.read()
     sys.exit(0)
@@ -81,7 +82,7 @@ class DeployTest(unittest.TestCase):
         self.legacy = {
             ".env": b"POSTGRES_PASSWORD=fixture-only\n",
             ".migration-verified": b"operator verified restored db\n",
-            "compose.yaml": b"services:\n  db: {}\n  server: {}\n",
+            "compose.yaml": b"services:\n  db: {}\n  server:\n    image: ${ONEMEMORY_SERVER_IMAGE}\n",
             "deployment.env": b"ONEMEMORY_SERVER_IMAGE=respire-server:legacy\nONEMEMORY_WEB_IMAGE=respire-web:keep\nONEMEMORY_WEB_PORT=49124\n",
             "compose-web.yaml": b"services:\n  web:\n    image: respire-web:keep\n",
             "current-revision": b"legacy-combined-revision\n",
@@ -104,8 +105,8 @@ class DeployTest(unittest.TestCase):
         self.log = self.root / "commands.jsonl"
         self.env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}",
                         STUB_LOG=str(self.log), STUB_REVISION=REVISION,
-                        ONEMEMORY_SERVER_IMAGE="host-environment-must-not-win",
-                        ONEMEMORY_WEB_IMAGE="host-web-must-not-change")
+                        RSRS_SERVER_IMAGE="host-environment-must-not-win",
+                        RSRS_WEB_IMAGE="host-web-must-not-change")
 
     def checksums(self):
         (self.artifact / "SHA256SUMS").write_text("".join(
@@ -161,7 +162,7 @@ class DeployTest(unittest.TestCase):
     def test_success_and_immutable_repeat_snapshots(self):
         self.deploy()
         self.assertEqual((self.directory / "current-api-revision").read_text(), REVISION + "\n")
-        self.assertIn("ONEMEMORY_SERVER_IMAGE=" + IMAGE_ID, (self.directory / "api-deployment.env").read_text())
+        self.assertIn("RSRS_SERVER_IMAGE=" + IMAGE_ID, (self.directory / "api-deployment.env").read_text())
         first = self.releases()[0]
         snapshot = {str(path.relative_to(first)): path.read_bytes() for path in first.rglob("*") if path.is_file()}
         self.deploy()
@@ -251,12 +252,17 @@ class DeployTest(unittest.TestCase):
 
     def test_first_rollout_rollback_removes_only_api_marker(self):
         self.deploy()
+        self.assertNotIn("ONEMEMORY_SERVER_IMAGE=", (self.directory / "api-deployment.env").read_text())
         result = subprocess.run(["bash", str(self.releases()[0] / "rollback-api.sh"), "--schema-compatible"],
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse((self.directory / "current-api-revision").exists())
         self.assertIn(OLD_IMAGE_ID, (self.directory / "api-deployment.env").read_text())
-        self.assertNotIn("ONEMEMORY_WEB", (self.directory / "api-deployment.env").read_text())
+        self.assertIn("ONEMEMORY_SERVER_IMAGE=" + OLD_IMAGE_ID, (self.directory / "api-deployment.env").read_text())
+        records = [json.loads(line) for line in self.log.read_text().splitlines()]
+        restored = [record for record in records if record.get("tool") == "docker" and "up" in record["args"]]
+        self.assertEqual(restored[-1]["legacy_image"], OLD_IMAGE_ID)
+        self.assertNotIn("RSRS_WEB", (self.directory / "api-deployment.env").read_text())
         self.assert_legacy_unchanged()
         self.assert_api_only_commands()
 

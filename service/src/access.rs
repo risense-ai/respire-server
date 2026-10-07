@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use respire::memory::bge::BgeEmbedder;
 use respire::memory::model::{MemoryEntry, MemoryQuery};
 use respire::memory::{MemoryEngine, SessionKeys};
@@ -19,6 +19,9 @@ pub fn serve(bind: &str, db: &Path, keys: SessionKeys) -> Result<()> {
     let address: SocketAddr = bind.parse()?;
     if !address.ip().is_loopback() { bail!("read-only tool API must bind a loopback address"); }
     let store = LocalStore::open(db)?;
+    let database = std::fs::canonicalize(db)?;
+    let index_root = database.parent().context("selected database has no library directory")?;
+    respire::core_sdk::set_index_root(index_root)?;
     let server = Server::http(address).map_err(|error| anyhow!("start read-only API failed: {error}"))?;
     let mut embedder = None;
     eprintln!("read-only tool API listening on {address}");

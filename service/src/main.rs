@@ -1,7 +1,10 @@
 //! Respire server — cloud API and independent loopback read-only tool API.
+
 //!
 //! serve: ciphertext-only HTTP store (auth domain + per-user vaults; server never sees plaintext).
 //! The memory CLI does not own any of this.
+
+mod env;
 
 mod access;
 mod http;
@@ -50,10 +53,11 @@ fn main() -> Result<()> {
         }
         Command::Access { bind } => {
             let session = respire::auth::load_local_session()?;
-            crate::access::serve(&bind, &respire::service::data_dir().join("onememory.db"), session)
+            let database = respire::service::database_path(&respire::service::data_dir())?;
+            crate::access::serve(&bind, &database, session)
         }
         Command::Serve { bind } => {
-            let admin = std::env::var("ONEMEMORY_ADMIN_TOKEN")
+            let admin = crate::env::var("RSRS_ADMIN_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty());
             let url = crate::store::connect_url()?;

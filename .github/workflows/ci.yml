@@ -13,7 +13,7 @@ jobs:
     name: cargo check
     runs-on: ubuntu-latest
     env:
-      RESPIRE_CORE_TEST_MODE: '1'
+      RSRS_CORE_TEST_MODE: '1'
       RUST_TEST_THREADS: '1'
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      RESPIRE_CORE_TEST_MODE: '1'
+      RSRS_CORE_TEST_MODE: '1'
       RUST_TEST_THREADS: '1'
       DATABASE_URL: postgres://postgres@localhost:5432/postgres
     steps:

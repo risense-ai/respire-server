@@ -40,7 +40,7 @@ generic code and templates. Never upload deployment snapshots or database dumps.
   marker for a tested restore. This script cannot prepare an empty database.
 - The existing `db` service must already be running under the same Compose project
   supplied by the operator. The script never starts or recreates it.
-- Configure `RESPIRE_DASHBOARD_URL` for the selected API in the private `.env` or
+- Configure `RSRS_DASHBOARD_URL` for the selected API in the private `.env` or
   `deployment.env`: DEV requires `https://dash.dev.rsrs.rs`; production uses
   `https://dash.rsrs.rs`. The production fallback is not a valid DEV setting.
   After rollout, check the device-code verification origin before login acceptance.
@@ -59,8 +59,8 @@ executing a script from it. Checksums detect corruption, not a malicious publish
 Do not pass unreviewed host environment overrides: Compose gives shell variables
 precedence over env files. The script explicitly sets only the API image/bind/port;
 other exported Compose variables remain the operator's responsibility.
-For an existing database, pass its original `RESPIRE_DATABASE_USER` and
-`RESPIRE_DATABASE_NAME` to the operator script and supply the same values in the
+For an existing database, pass its original `RSRS_DATABASE_USER` and
+`RSRS_DATABASE_NAME` to the operator script and supply the same values in the
 private Compose environment. The defaults are `respire` for a new installation;
 they are not a migration instruction. `DATABASE_URL` may explicitly retain the
 existing API connection URL. Never recreate or rename a database to fit a default.
@@ -100,7 +100,7 @@ the script install these dedicated managed files:
 The original `.env`, `deployment.env` (including web settings), `compose.yaml`,
 `compose-web.yaml`, `current-revision`, and `current-site-revision` remain unchanged.
 An optional mail environment file may be supplied through
-`RESPIRE_API_MAIL_ENV_FILE`; it must be an existing absolute path and is read,
+`RSRS_API_MAIL_ENV_FILE`; it must be an existing absolute path and is read,
 never rewritten. An explicitly supplied missing file is an error.
 The `api-deployment.env` override is for the API project only; do not add it to a
 web deployment command. Make operator-managed API configuration changes in `.env`
@@ -174,3 +174,9 @@ if it is unavailable. The PR safety workflow runs these tests, and artifact crea
 runs them again.
 These tests verify command isolation, state preservation and failure handling; a
 real Docker/Compose rehearsal is still required before a production rollout.
+
+Rollback compatibility: a saved pre-namespace Compose file can still read
+`ONEMEMORY_SERVER_IMAGE` and `ONEMEMORY_HOST_*` directly. The generated rollback
+script exports and persists those aliases only when that saved Compose references
+them, so the recorded image ID and loopback port remain effective after rollback.
+Normal deployments write `RSRS_*` overrides. Shared environment files are unchanged.
