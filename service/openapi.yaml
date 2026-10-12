@@ -654,7 +654,7 @@ components:
         ceremony_id: { type: string, format: uuid }
         credential:
           type: object
-          description: Manually serialized WebAuthn response (id/rawId/type/response/clientExtensionResults). Strip all PRF results; only optional clientExtensionResults.prf.enabled is accepted. Unknown top-level and response fields are rejected. Never send whole credential.toJSON() without stripping extensions.
+          description: Manually serialized WebAuthn response (id/rawId/type/response/clientExtensionResults). Strip all PRF results; optional clientExtensionResults.prf.enabled must be boolean. Registration also accepts a credProps object containing only an optional boolean rk; assertions reject credProps. Creation options advertise only prf and credProps. Unknown top-level and response fields are rejected. Never send whole credential.toJSON() without stripping extensions.
         wrapper: { $ref: '#/components/schemas/PasskeyWrapper' }
     PasskeyWrapper:
       type: object

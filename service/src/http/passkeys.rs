@@ -176,7 +176,9 @@ fn canonical_bytes(value: &str) -> Result<Vec<u8>> {
 }
 
 /// Reject secret-bearing extension data rather than silently retaining it in
-/// server-side state or logs. Only public, unsigned PRF capability is accepted.
+/// server-side state or logs. Only public, unsigned capability hints are accepted:
+/// PRF support, and registration-only credential properties. Neither is used as
+/// proof of user verification or authenticator security.
 fn validate_credential(value: &Value, account_id: Option<&str>) -> Result<()> {
     let obj = value
         .as_object()
@@ -202,8 +204,22 @@ fn validate_credential(value: &Value, account_id: Option<&str>) -> Result<()> {
         let ext = extensions
             .as_object()
             .ok_or_else(|| anyhow!("invalid extensions"))?;
-        if ext.keys().any(|k| k != "prf") {
+        // Only registration omits the account-handle check. credProps is a
+        // registration extension and must not widen the assertion allowlist.
+        let registration = account_id.is_none();
+        if ext
+            .keys()
+            .any(|k| k != "prf" && !(registration && k == "credProps"))
+        {
             bail!("unsupported client extensions");
+        }
+        if let Some(props) = ext.get("credProps") {
+            let props = props
+                .as_object()
+                .ok_or_else(|| anyhow!("invalid credential properties"))?;
+            if props.keys().any(|k| k != "rk") || props.get("rk").is_some_and(|v| !v.is_boolean()) {
+                bail!("invalid credential properties");
+            }
         }
         if let Some(prf) = ext.get("prf") {
             let prf = prf
@@ -473,7 +489,11 @@ fn register_start(
     )?;
     tx.commit()?;
     let mut public_key = serde_json::to_value(options)?["publicKey"].clone();
-    public_key["extensions"]["prf"] = json!({});
+    // Advertise only client extension outputs that this API accepts. The
+    // library defaults also request UVM/credProtect; those are unnecessary for
+    // PRF unlock and may expose additional device information. Its server-side
+    // state permits ignored extensions; UV remains required independently.
+    public_key["extensions"] = json!({"prf":{},"credProps":true});
     Ok(envelope(config, &meta, &id, public_key))
 }
 
@@ -1102,6 +1122,96 @@ mod tests {
                 "signed negative {kind}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn registration_accepts_only_advertised_safe_credential_properties() -> Result<()> {
+        let (repo, config, mut auth) = fixture()?;
+        for props in [json!({}), json!({"rk":true}), json!({"rk":false})] {
+            let options = register_start(&repo, &config, USER, TOKEN, r#"{"label":"Properties"}"#)?;
+            assert_eq!(
+                options["public_key"]["extensions"],
+                json!({"prf":{},"credProps":true})
+            );
+            let mut credential = make_registration(&mut auth, &config, &options)?;
+            credential["clientExtensionResults"]["credProps"] = props;
+            let next = register_finish(
+                &repo,
+                &config,
+                USER,
+                TOKEN,
+                &finish_body(&options, credential).to_string(),
+            )?;
+            assert!(next["credential_id"].is_string());
+            assert_ne!(next["ceremony_id"], options["ceremony_id"]);
+            assert!(
+                next["public_key"].get("extensions").is_none(),
+                "assertion options must not advertise unhandled client extensions"
+            );
+        }
+        // Accepted browser hints do not replace the two signed assertions.
+        assert_eq!(list(&repo, &config, USER)?["credentials"], json!([]));
+        Ok(())
+    }
+
+    #[test]
+    fn registration_rejects_malformed_properties_unknown_extensions_and_prf_secrets() -> Result<()>
+    {
+        let (repo, config, mut auth) = fixture()?;
+        let invalid = [
+            json!({"credProps":null}),
+            json!({"credProps":true}),
+            json!({"credProps":[]}),
+            json!({"credProps":{"rk":null}}),
+            json!({"credProps":{"rk":"true"}}),
+            json!({"credProps":{"rk":1}}),
+            json!({"credProps":{"rk":true,"unknown":false}}),
+            json!({"unknown":{}}),
+            json!({"uvm":[[1,2,3]]}),
+            json!({"credProps":{"rk":true},"prf":{"enabled":true,"results":{"first":"secret"}}}),
+        ];
+        for extensions in invalid {
+            let options = register_start(
+                &repo,
+                &config,
+                USER,
+                TOKEN,
+                r#"{"label":"Invalid properties"}"#,
+            )?;
+            let mut credential = make_registration(&mut auth, &config, &options)?;
+            credential["clientExtensionResults"] = extensions;
+            let input = finish_body(&options, credential).to_string();
+            assert!(register_finish(&repo, &config, USER, TOKEN, &input).is_err());
+            let remaining: i64 = repo
+                .lock()
+                .query_one(
+                    "SELECT COUNT(*) FROM vault_passkey_ceremonies WHERE id=$1",
+                    &[&options["ceremony_id"].as_str().context("ceremony ID")?],
+                )?
+                .get(0);
+            assert_eq!(remaining, 0, "rejected registration consumes its ceremony");
+        }
+        assert_eq!(list(&repo, &config, USER)?["credentials"], json!([]));
+        Ok(())
+    }
+
+    #[test]
+    fn assertions_do_not_accept_registration_credential_properties() -> Result<()> {
+        let (repo, config, mut auth) = fixture()?;
+        let active = enroll(&repo, &config, &mut auth)?;
+        let options = unlock_start(&repo, &config, USER, TOKEN, &select(&active))?;
+        let mut credential = make_assertion(&mut auth, &config, &options)?;
+        credential["clientExtensionResults"]["credProps"] = json!({"rk":true});
+        assert!(assertion_finish(
+            &repo,
+            &config,
+            USER,
+            TOKEN,
+            &finish_body(&options, credential).to_string(),
+            false
+        )
+        .is_err());
         Ok(())
     }
 
