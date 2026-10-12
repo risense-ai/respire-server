@@ -52,6 +52,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0006_ops_stats.sql",
         sql: include_str!("migrations/0006_ops_stats.sql"),
     },
+    Migration {
+        version: 8,
+        name: "0007_passkey_unlock.sql",
+        sql: include_str!("migrations/0007_passkey_unlock.sql"),
+    },
 ];
 
 pub(crate) fn apply(client: &mut Client) -> Result<()> {
@@ -189,7 +194,7 @@ mod tests {
             let mut client = repo.lock();
             // Simulate a v1 database: baseline tables without sync/resolution/mail objects.
             client.batch_execute(
-                "DROP TABLE IF EXISTS github_authorizations, github_identities, cli_authorizations, ops_daily_stats,
+                "DROP TABLE IF EXISTS vault_passkey_ceremonies, vault_passkeys, github_authorizations, github_identities, cli_authorizations, ops_daily_stats,
                      sync_resolutions, sync_heads, sync_versions, sync_accounts,
                      mail_outbox, verify_codes, audit_log, super_admins, vault, sessions, blobs,
                      users, sync_counter, schema_meta CASCADE;
@@ -257,7 +262,9 @@ mod tests {
         let repo = crate::store::connect_unique()?;
         let mut client = repo.lock();
         client.batch_execute(
-            "DROP TABLE ops_daily_stats;
+            "DROP TABLE vault_passkey_ceremonies, vault_passkeys;
+             ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;
+             DROP TABLE ops_daily_stats;
              DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
              DROP TRIGGER ops_session_insert ON sessions; DROP FUNCTION record_ops_insert();
              DELETE FROM schema_meta WHERE k='ops_stats_started_at';
@@ -272,7 +279,7 @@ mod tests {
              VALUES ('upgrade','legacy','encrypted','nonce','invalid-client-date',42);",
         )?;
         apply(&mut client)?;
-        assert_eq!(version_of(&mut client)?, 7);
+        assert_eq!(version_of(&mut client)?, CURRENT_SCHEMA_VERSION);
         let user = client.query_one("SELECT pass_hash,salt,token,totp_secret FROM users WHERE \"user\"='upgrade'", &[])?;
         assert_eq!(user.get::<_, String>(0), "hash");
         assert_eq!(user.get::<_, String>(1), "salt");
@@ -300,7 +307,9 @@ mod tests {
             let repo = crate::store::connect_unique()?;
             let mut client = repo.lock();
             client.batch_execute(
-                "DROP TABLE ops_daily_stats, github_authorizations, github_identities;
+                "DROP TABLE vault_passkey_ceremonies, vault_passkeys;
+                 ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;
+                 DROP TABLE ops_daily_stats, github_authorizations, github_identities;
                  DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
                  DROP TRIGGER ops_session_insert ON sessions; DROP FUNCTION record_ops_insert();
                  DELETE FROM schema_meta WHERE k='ops_stats_started_at';",
@@ -310,7 +319,7 @@ mod tests {
             }
             client.execute("UPDATE schema_meta SET v=$1 WHERE k='version'", &[&version.to_string()])?;
             apply(&mut client)?;
-            assert_eq!(version_of(&mut client)?, 7);
+            assert_eq!(version_of(&mut client)?, CURRENT_SCHEMA_VERSION);
             let tables: i64 = client.query_one(
                 "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema()
                  AND table_name IN ('cli_authorizations','github_identities','github_authorizations','ops_daily_stats')", &[],
@@ -322,6 +331,31 @@ mod tests {
             )?;
             assert_eq!(client.query_one("SELECT readonly FROM sessions WHERE id='readonly-default'", &[])?.get::<_, i32>(0), 0);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn v7_passkey_upgrade_preserves_existing_recovery_wrapper() -> Result<()> {
+        let repo = crate::store::connect_unique()?;
+        repo.register("upgrade-vault", "hash", "salt")?;
+        repo.put_vault("upgrade-vault", "0011223344556677", "opaque-wrap", "nonce", 1)?;
+        let mut client = repo.lock();
+        client.batch_execute(
+            "DROP TABLE vault_passkey_ceremonies, vault_passkeys;
+             ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;
+             UPDATE schema_meta SET v='7' WHERE k='version';")?;
+        apply(&mut client)?;
+        let row = client.query_one(r#"SELECT kdf_salt,wrapped_urk,urk_nonce,version,account_id,key_generation
+            FROM vault WHERE "user"='upgrade-vault'"#, &[])?;
+        assert_eq!(row.get::<_, String>(0),"0011223344556677");
+        assert_eq!(row.get::<_, String>(1),"opaque-wrap");
+        assert_eq!(row.get::<_, String>(2),"nonce");
+        assert_eq!(row.get::<_, i32>(3),1);
+        let account: String = row.get(4);
+        uuid::Uuid::parse_str(&account)?;
+        assert_eq!(row.get::<_, i64>(5),1);
+        apply(&mut client)?;
+        assert_eq!(client.query_one(r#"SELECT account_id FROM vault WHERE "user"='upgrade-vault'"#,&[])?.get::<_,String>(0),account);
         Ok(())
     }
 
