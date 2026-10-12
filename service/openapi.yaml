@@ -8,6 +8,14 @@ info:
     schema; Admin JSON routes are not yet fully described. Frontends are owned by
     respire-site. See ../docs/browser-api-contract.md for the cross-origin
     GET/POST + Authorization/Content-Type contract and staged rollout.
+    Passkey request schemas describe the canonical supported browser transport
+    contract, not every compatibility shape tolerated by deserialization. Clients
+    omit wrapper outside commit, omit phase-inapplicable response fields, and use
+    unpadded base64url strings for binary fields. The runtime may tolerate null
+    wrappers, unused known response fields, or legacy binary representations in
+    some deserialization paths. These compatibility forms are outside the canonical
+    contract. WebAuthn cryptographic and account-ownership verification remains
+    independently enforced by the server.
 servers:
   - url: https://api.rsrs.rs
     description: Assigned Respire API endpoint; configuration only, not proof of DNS or deployment.
@@ -538,7 +546,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/PasskeyFinish' }
+            schema: { $ref: '#/components/schemas/PasskeyRegistrationFinish' }
       responses:
         "200":
           description: Fresh assertion ceremony with credential_id and prf_salt
@@ -555,7 +563,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/PasskeyFinish' }
+            schema: { $ref: '#/components/schemas/PasskeyAssertionFinish' }
       responses:
         "200":
           description: New assertion challenge, same credential/salt/account/generation
@@ -572,13 +580,7 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              allOf:
-                - { $ref: '#/components/schemas/PasskeyFinish' }
-                - type: object
-                  required: [wrapper]
-                  properties:
-                    wrapper: { $ref: '#/components/schemas/PasskeyWrapper' }
+            schema: { $ref: '#/components/schemas/PasskeyRegistrationCommit' }
       responses:
         "200": { description: Activated; ok=true }
         "400": { description: Invalid ceremony/assertion/wrapper, duplicate credential, or changed generation }
@@ -607,7 +609,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/PasskeyFinish' }
+            schema: { $ref: '#/components/schemas/PasskeyAssertionFinish' }
       responses:
         "200":
           description: Matching wrapper and credential/account/RP/generation/PRF-salt metadata
@@ -647,15 +649,115 @@ components:
       required: [credential_id]
       properties:
         credential_id: { type: string, description: Canonical unpadded base64url }
-    PasskeyFinish:
+    PasskeyRegistrationFinish:
       type: object
+      additionalProperties: false
       required: [ceremony_id, credential]
       properties:
         ceremony_id: { type: string, format: uuid }
-        credential:
-          type: object
-          description: Manually serialized WebAuthn response (id/rawId/type/response/clientExtensionResults). Strip all PRF results; optional clientExtensionResults.prf.enabled must be boolean. Registration also accepts a credProps object containing only an optional boolean rk; assertions reject credProps. Creation options advertise only prf and credProps. Unknown top-level and response fields are rejected. Never send whole credential.toJSON() without stripping extensions.
+        credential: { $ref: '#/components/schemas/PasskeyRegistrationCredential' }
+    PasskeyAssertionFinish:
+      type: object
+      additionalProperties: false
+      required: [ceremony_id, credential]
+      properties:
+        ceremony_id: { type: string, format: uuid }
+        credential: { $ref: '#/components/schemas/PasskeyAssertionCredential' }
+    PasskeyRegistrationCommit:
+      type: object
+      additionalProperties: false
+      required: [ceremony_id, credential, wrapper]
+      properties:
+        ceremony_id: { type: string, format: uuid }
+        credential: { $ref: '#/components/schemas/PasskeyAssertionCredential' }
         wrapper: { $ref: '#/components/schemas/PasskeyWrapper' }
+    PasskeyCredentialId:
+      type: string
+      minLength: 2
+      maxLength: 1366
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Canonical unpadded base64url encoding of 1 to 1024 credential-ID bytes. Server additionally checks canonical decoding and exact id/rawId equality.
+    PasskeyBinaryResponse:
+      type: string
+      minLength: 2
+      maxLength: 131072
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Unpadded base64url transport encoding. The complete serialized request is capped at 128 KiB; this per-field bound does not replace the aggregate server limit or WebAuthn verification.
+    PasskeyPrfCapability:
+      type: object
+      additionalProperties: false
+      description: Unsigned public capability hint only. PRF results, evaluation outputs and derived keys must remain in the browser and are never accepted here.
+      properties:
+        enabled: { type: boolean }
+    PasskeyCredentialProperties:
+      type: object
+      additionalProperties: false
+      description: Registration-only unsigned browser hint. It is not proof of user verification or authenticator security.
+      properties:
+        rk: { type: boolean }
+    PasskeyRegistrationExtensions:
+      type: object
+      additionalProperties: false
+      description: Creation options advertise only prf and credProps. Strip all other client extension outputs, including PRF results.
+      properties:
+        prf: { $ref: '#/components/schemas/PasskeyPrfCapability' }
+        credProps: { $ref: '#/components/schemas/PasskeyCredentialProperties' }
+    PasskeyAssertionExtensions:
+      type: object
+      additionalProperties: false
+      description: Assertions accept only the unsigned PRF capability hint. credProps is registration-only; PRF results must never be serialized into this object.
+      properties:
+        prf: { $ref: '#/components/schemas/PasskeyPrfCapability' }
+    PasskeyRegistrationResponse:
+      type: object
+      additionalProperties: false
+      required: [clientDataJSON, attestationObject]
+      properties:
+        clientDataJSON: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        attestationObject: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        transports:
+          type: array
+          nullable: true
+          maxItems: 65536
+          description: Optional public transport hints. Unknown transport strings are ignored by the verifier. The complete request-size limit also applies.
+          items: { type: string, maxLength: 131072 }
+    PasskeyAssertionResponse:
+      type: object
+      additionalProperties: false
+      required: [clientDataJSON, authenticatorData, signature]
+      properties:
+        clientDataJSON: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        authenticatorData: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        signature: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        userHandle:
+          type: string
+          nullable: true
+          minLength: 22
+          maxLength: 22
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: If present and non-null, canonical unpadded base64url of the 16-byte account UUID. The server verifies exact ownership, not just this transport shape.
+    PasskeyRegistrationCredential:
+      type: object
+      additionalProperties: false
+      required: [id, rawId, type, response]
+      description: Manually serialized registration response. Schema validation covers transport shape only; the server independently verifies the attestation, challenge, exact RP/origin, UV and credential ownership. Do not forward credential.toJSON() without filtering client extensions.
+      properties:
+        id: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        rawId: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        type: { type: string, enum: [public-key] }
+        response: { $ref: '#/components/schemas/PasskeyRegistrationResponse' }
+        clientExtensionResults: { $ref: '#/components/schemas/PasskeyRegistrationExtensions' }
+    PasskeyAssertionCredential:
+      type: object
+      additionalProperties: false
+      required: [id, rawId, type, response]
+      description: Manually serialized assertion response. Schema validation does not verify the signature, freshness, UV, RP/origin or account binding; the server enforces those independently. PRF output remains exclusively in the browser.
+      properties:
+        id: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        rawId: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        type: { type: string, enum: [public-key] }
+        response: { $ref: '#/components/schemas/PasskeyAssertionResponse' }
+        clientExtensionResults: { $ref: '#/components/schemas/PasskeyAssertionExtensions' }
     PasskeyWrapper:
       type: object
       additionalProperties: false
@@ -663,8 +765,8 @@ components:
       properties:
         version: { type: integer, enum: [1] }
         kdf: { type: string, enum: [webauthn-prf-hkdf-sha256-v1] }
-        wrapped_urk: { type: string, description: Canonical unpadded base64url of 48 bytes (32-byte URK plus GCM tag) }
-        nonce: { type: string, description: Canonical unpadded base64url of 12 fresh random bytes }
+        wrapped_urk: { type: string, minLength: 64, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$', description: Canonical unpadded base64url of 48 bytes (32-byte URK plus GCM tag) }
+        nonce: { type: string, minLength: 16, maxLength: 16, pattern: '^[A-Za-z0-9_-]+$', description: Canonical unpadded base64url of 12 fresh random bytes }
     PasskeyCeremony:
       type: object
       required: [ceremony_id, public_key, account_id, rp_id, key_generation]
