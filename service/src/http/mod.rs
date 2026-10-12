@@ -17,6 +17,7 @@ mod dto;
 mod github;
 mod json;
 mod public;
+mod passkeys;
 mod router;
 mod self_api;
 mod sync;

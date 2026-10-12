@@ -1105,36 +1105,65 @@ impl BlobRepo {
         &self, user: &str, kdf_salt: &str, wrapped_urk: &str, urk_nonce: &str, version: i64,
         create_only: bool,
     ) -> Result<bool> {
+        self.write_vault_operation(user, kdf_salt, wrapped_urk, urk_nonce, version,
+            create_only, false, None, false)
+    }
+
+    /// Only an explicit same-URK rewrap with a current generation may preserve passkeys.
+    /// Older clients cannot distinguish rewrap from destructive key replacement, so
+    /// changed legacy writes invalidate passkeys conservatively.
+    pub(crate) fn write_vault_operation(
+        &self, user: &str, kdf_salt: &str, wrapped_urk: &str, urk_nonce: &str, version: i64,
+        create_only: bool, rewrap_same_urk: bool, expected_generation: Option<i64>, reset: bool,
+    ) -> Result<bool> {
         if kdf_salt.len() < 16 || wrapped_urk.is_empty() || urk_nonce.is_empty() {
             anyhow::bail!("invalid vault");
         }
-        // A legacy v1 wrap preserves the client's original password/Secret
-        // factors. The server stores it opaquely; only the client derives keys.
-        if version < 1 || version > 4 {
+        if !(1..=4).contains(&version) {
             anyhow::bail!("unsupported vault version");
         }
         let version = i32::try_from(version).map_err(|_| anyhow!("unsupported vault version"))?;
-        let now = now_rfc();
-        let statement = if create_only {
-            r#"INSERT INTO vault ("user", kdf_salt, wrapped_urk, urk_nonce, version, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("user") DO NOTHING"#
-        } else {
-            r#"INSERT INTO vault ("user", kdf_salt, wrapped_urk, urk_nonce, version, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6)
-               ON CONFLICT ("user") DO UPDATE SET
-                kdf_salt=excluded.kdf_salt, wrapped_urk=excluded.wrapped_urk,
-                urk_nonce=excluded.urk_nonce, version=excluded.version, updated_at=excluded.updated_at"#
-        };
-        Ok(self.lock().execute(statement,
-            &[&user, &kdf_salt, &wrapped_urk, &urk_nonce, &version, &now],
-        )? > 0)
+        let mut client = self.lock();
+        let mut tx = client.transaction()?;
+        // The account row also serializes the first vault creation.
+        tx.query_opt(r#"SELECT 1 FROM users WHERE "user"=$1 FOR UPDATE"#, &[&user])?
+            .ok_or_else(|| anyhow!("user gone"))?;
+        let existing = tx.query_opt(
+            r#"SELECT kdf_salt,wrapped_urk,urk_nonce,version,key_generation FROM vault
+               WHERE "user"=$1 FOR UPDATE"#, &[&user])?;
+        if let Some(row) = existing {
+            if create_only { return Ok(false); }
+            let generation: i64 = row.get(4);
+            if (rewrap_same_urk || reset || expected_generation.is_some())
+                && expected_generation != Some(generation) {
+                anyhow::bail!("vault generation changed; reload before updating");
+            }
+            let unchanged = row.get::<_, String>(0) == kdf_salt
+                && row.get::<_, String>(1) == wrapped_urk
+                && row.get::<_, String>(2) == urk_nonce && row.get::<_, i32>(3) == version;
+            if reset || (!unchanged && !rewrap_same_urk) {
+                tx.execute(r#"DELETE FROM vault_passkeys WHERE "user"=$1"#, &[&user])?;
+                tx.execute(r#"DELETE FROM vault_passkey_ceremonies WHERE "user"=$1"#, &[&user])?;
+                tx.execute(r#"UPDATE vault SET key_generation=key_generation+1 WHERE "user"=$1"#, &[&user])?;
+            }
+        } else if rewrap_same_urk || reset || expected_generation.is_some() {
+            anyhow::bail!("vault missing; initialize before updating");
+        }
+        tx.execute(
+            r#"INSERT INTO vault ("user",kdf_salt,wrapped_urk,urk_nonce,version,updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("user") DO UPDATE SET
+               kdf_salt=excluded.kdf_salt,wrapped_urk=excluded.wrapped_urk,
+               urk_nonce=excluded.urk_nonce,version=excluded.version,updated_at=excluded.updated_at"#,
+            &[&user,&kdf_salt,&wrapped_urk,&urk_nonce,&version,&now_rfc()])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     pub(crate) fn get_vault(&self, user: &str) -> Result<Option<serde_json::Value>> {
         Ok(self
             .lock()
             .query_opt(
-                r#"SELECT kdf_salt, wrapped_urk, urk_nonce, version FROM vault WHERE "user"=$1"#,
+                r#"SELECT kdf_salt, wrapped_urk, urk_nonce, version, account_id, key_generation FROM vault WHERE "user"=$1"#,
                 &[&user],
             )?
             .map(|row| {
@@ -1144,6 +1173,8 @@ impl BlobRepo {
                     "wrapped_urk": row.get::<_, String>(1),
                     "urk_nonce": row.get::<_, String>(2),
                     "version": version as i64,
+                    "account_id": row.get::<_, String>(4),
+                    "key_generation": row.get::<_, i64>(5),
                 })
             }))
     }
@@ -1193,6 +1224,8 @@ impl BlobRepo {
     pub(crate) fn revoke_user(&self, user: &str) -> Result<(bool, u64)> {
         let mut c = self.lock();
         let mut tx = c.transaction()?;
+        // Match vault/passkey writers' account-first lock order.
+        tx.query_opt(r#"SELECT 1 FROM users WHERE "user"=$1 FOR UPDATE"#, &[&user])?;
         tx.execute(r#"DELETE FROM sessions WHERE "user"=$1"#, &[&user])?;
         let blobs = tx.execute(r#"DELETE FROM blobs WHERE "user"=$1"#, &[&user])?;
         tx.execute(r#"DELETE FROM vault WHERE "user"=$1"#, &[&user])?;
@@ -1728,7 +1761,9 @@ mod tests {
         assert!(!repo.create_vault("fay", "aabbccddeeff0011", "other-key-wrap", "other-nonce", 1)?);
         let v1 = repo.get_vault("fay")?.context("v1 vault missing")?;
         assert_eq!(v1, serde_json::json!({"kdf_salt":"aabbccddeeff0011",
-            "wrapped_urk":wrapped_v1,"urk_nonce":nonce_v1,"version":1}));
+            "wrapped_urk":wrapped_v1,"urk_nonce":nonce_v1,"version":1,
+            "account_id":v1["account_id"],"key_generation":1}));
+        uuid::Uuid::parse_str(v1["account_id"].as_str().context("account ID")?)?;
         assert_eq!(repo.authentication_salt("fay", false)?, sa);
         assert!(repo.login("fay", &ha)?.is_some());
         assert!(repo.put_vault("fay", "aabbccddeeff0011", "wrap", "nonce", 5).is_err());

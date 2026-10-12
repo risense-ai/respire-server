@@ -1039,7 +1039,13 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
                 &competing.to_string(), None, None, true).0, 401);
             let (status, reply) = handle(&repo, "GET", "/api/self/vault", "", Some(&token));
             assert_eq!(status, 200, "{reply}");
-            assert_eq!(serde_json::from_str::<serde_json::Value>(&reply)?, vault);
+            let mut received: serde_json::Value = serde_json::from_str(&reply)?;
+            uuid::Uuid::parse_str(received["account_id"].as_str().context("account ID")?)?;
+            assert_eq!(received["key_generation"], if version == 1 { 1 } else { 2 });
+            let fields = received.as_object_mut().context("vault fields")?;
+            fields.remove("account_id");
+            fields.remove("key_generation");
+            assert_eq!(received, vault, "additive metadata must not alter recovery fields");
             assert_eq!(repo.authentication_salt("vera", false)?, auth_salt);
             assert!(repo.login("vera", &pass_hash)?.is_some());
         }
