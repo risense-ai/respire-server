@@ -2,13 +2,14 @@
 
 This feature adds an optional browser decryption factor for an already signed-in
 account. It does not replace login or the saved superpassword/recovery code. The
-Server verifies WebAuthn; only the trusted Dashboard receives PRF output and
-unwraps the existing 32-byte user root key (URK).
+Server verifies WebAuthn; only the trusted Dashboard unwraps the existing
+32-byte user root key (URK). PRF mode and the separately opted-in trusted-browser
+mode have different key-storage and revocation boundaries, described below.
 
 ## Cryptographic and compatibility boundary
 
 - Existing vault versions 1/2 (superpassword), 3 (superpassword plus Secret Key),
-  and 4 (A3 recovery code) remain readable. Enrollment uses the existing browser
+  and 4 (A3 recovery code) remain readable. PRF enrollment uses the existing browser
   unwrap routine and wraps the **same URK** under an independent PRF-derived key.
   Existing recovery wrappers and encrypted memories are not rewritten.
 - Each credential has a server-generated, public 32-byte PRF input. The browser
@@ -35,9 +36,51 @@ unwraps the existing 32-byte user root key (URK).
   protocol coverage, not evidence for Apple, 1Password, Bitwarden or another
   provider.
 
+## Optional trusted-browser mode (without PRF)
+
+Ordinary WebAuthn support does not imply PRF support. Trusted-browser mode is a
+separate, default-off choice for a provider that can verify the user but cannot
+return a PRF secret. Never silently downgrade PRF enrollment into this mode.
+
+- The operator must set `RSRS_TRUSTED_BROWSER_UNLOCK=1`, and the user must
+  explicitly choose to trust this browser. The existing exact RP/origin settings
+  remain mandatory. The server flag alone must not enroll a user or persist a key.
+- On first enrollment the browser unlocks the existing URK with the recovery
+  method once, creates a random nonexportable WebCrypto AES-GCM device KEK,
+  persists it in IndexedDB, and reads it back to prove that the same key can
+  reopen the wrapper before activation. No new URK or memory migration occurs.
+- Only the opaque URK wrapper goes to the Server. The KEK and plaintext URK never
+  leave the browser. The wrapper is not persisted in browser storage or caches.
+  Trusted wrappers use the distinct `trusted-browser-aes256gcm-v1` format and
+  authenticated metadata covering account UUID, RP, credential, generation and
+  a random UUIDv4 device identifier. Device IDs are selectors, not secrets.
+- Registration and two fresh user-verified assertions are still required.
+  Subsequent wrapper release requires another fresh server-verified assertion,
+  scoped to the account, current login session, selected credential, device and
+  key generation. A prior assertion or another device ID cannot release it.
+- Nonexportable does not mean hardware-protected or inaccessible to same-origin
+  JavaScript. An XSS payload can use a stored CryptoKey; malware or an accessible
+  browser profile is outside the claimed protection. A copied key alone, a stolen
+  session token alone, or a Server database dump alone is not sufficient under
+  the intended honest-Server flow. Someone with a previously released wrapper
+  and the usable device key can decrypt offline without another assertion.
+- Revocation stops future Server releases; it cannot retract old wrapper/key
+  copies. This online authorization gate is not a cryptographic PRF binding.
+  Keep recovery available and never advertise this mode as equivalent to PRF.
+- Explicit logout forgets trusted keys for the verified current account; if account
+  identity cannot be established reliably, it conservatively forgets all trusted
+  keys in this browser and explains that fallback. Switching accounts is not
+  logout. Storage cleanup must fence queued writes across tabs and must not
+  report success after a failed deletion.
+- A new browser, cleared site storage, lost local key or forgotten trust requires
+  recovery-based enrollment again. Syncing a Bitwarden passkey does not sync the
+  Respire device KEK. No actual-provider certification follows from a virtual
+  authenticator or a mocked provider response.
+
 ## Account and reset semantics
 
-The additive PostgreSQL migration reaches schema 8. Existing vaults receive a
+The additive PostgreSQL migrations reach schema 9 (schema 8 introduced Passkeys;
+schema 9 adds explicit credential mode and device binding). Existing vaults receive a
 stable account UUID and `key_generation = 1`. Separate credential and ceremony
 tables contain public verification material and opaque encrypted wrappers.
 
@@ -124,12 +167,14 @@ compatibility evidence.
 
 ## Disablement and rollback
 
-First disable the feature by clearing both Passkey variables and restart the
-**current schema-8-compatible** Server image; recovery-code operation remains.
+Disable only trusted-browser mode by clearing `RSRS_TRUSTED_BROWSER_UNLOCK`;
+existing PRF and recovery paths remain. To disable all Passkey unlock, clear the
+trusted-browser flag and both Passkey RP/origin variables, then restart the
+**current schema-9-compatible** Server image; recovery-code operation remains.
 Roll back the Dashboard independently to its prior reviewed DEV deployment.
 Retain backups, the previous image and all operator configuration snapshots.
 
-An old schema-7 Server explicitly refuses a schema-8 database. The generic image
+Old schema-7/8 Server binaries refuse a schema-9 database. The generic image
 rollback switch is **not** a safe database downgrade. Never blindly lower
 `schema_meta`, drop Passkey tables, or restore a backup over later user writes.
 If an old binary is necessary, an operator must stop writers and execute a
@@ -138,7 +183,33 @@ restored copy, accounting for every write since the backup. Prefer a forward fix
 or feature disablement when preserving those writes matters. No automatic
 production deployment or rollback is part of the feature PR.
 
+### Additional trusted-browser acceptance gates
+
+1. The operator flag absent and the user option unselected never persist a local
+   device key or accept a no-PRF wrapper. Existing PRF enrollment still works.
+2. A no-PRF authenticator can enroll only the explicitly selected mode. Verify
+   two independent UV assertions, IndexedDB persistence/read-back, same-URK
+   round-trip, reload and one fresh assertion before decrypting old ciphertext.
+3. Blocked/quota-failed IndexedDB, failed structured-clone/read-back, missing key,
+   cancellation and a late write after logout must never activate unusable trust
+   or resurrect a forgotten key. Never report deletion as successful if it failed.
+4. Reject replay, wrong session/account/credential/device/generation/origin and
+   missing UV. Account switching never exposes another account's key or wrapper.
+5. Revoke, destructive reset and changed legacy writes invalidate trusted wrappers
+   atomically. Same-URK recovery rewrap preserves only current-generation wrappers.
+6. Unknown commit responses must remain explicit; a failed or early empty list is
+   not proof that enrollment failed. Do not auto-delete a possibly active binding.
+7. Inspect only synthetic traffic/storage: no recovery secret, PRF output, KEK or
+   plaintext URK in requests/logs/storage, and no browser-persisted trusted-browser URK wrapper. Encrypted recovery-wrapper
+   metadata used by existing memory synchronization is a different format and
+   cannot be decrypted with the device KEK.
+8. Run a real Chrome + Bitwarden acceptance separately using a dedicated synthetic
+   account and explicit provider interaction. Record exact versions and outcome;
+   native virtual no-PRF WebAuthn coverage is not this acceptance test.
+
 ## References
 
 - [WebAuthn PRF extension](https://www.w3.org/TR/webauthn-3/#prf-extension)
 - [webauthn-rs verification and server-state requirements](https://docs.rs/webauthn-rs/0.5.5/webauthn_rs/struct.Webauthn.html)
+
+- [WebCrypto storage and security boundaries](https://www.w3.org/TR/webcrypto/#security-considerations)

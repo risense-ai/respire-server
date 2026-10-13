@@ -1,5 +1,5 @@
-//! Opt-in, authenticated WebAuthn + PRF vault unlock. The server verifies WebAuthn
-//! signatures; PRF outputs and the decrypted URK are exclusively browser-side.
+//! Opt-in WebAuthn vault unlock with PRF or a trusted-browser key. We verify
+//! signatures; PRF outputs, trusted-browser keys and the URK stay browser-side.
 //! Persisted ceremony state must never be returned to a client.
 
 use anyhow::{anyhow, bail, Result};
@@ -17,11 +17,13 @@ const TTL_SECONDS: i64 = 300;
 const MAX_CREDENTIALS: i64 = 20;
 const MAX_PENDING: i64 = 8;
 const WRAPPER_KDF: &str = "webauthn-prf-hkdf-sha256-v1";
+const DEVICE_WRAPPER_KDF: &str = "trusted-browser-aes256gcm-v1";
 
 struct Config {
     rp_id: String,
     origin: String,
     webauthn: Webauthn,
+    trusted_browser: bool,
 }
 
 impl Config {
@@ -47,6 +49,7 @@ impl Config {
             rp_id: rp_id.into(),
             origin: origin.into(),
             webauthn,
+            trusted_browser: false,
         })
     }
 
@@ -59,7 +62,10 @@ impl Config {
         if rp.is_empty() || origin.is_empty() {
             bail!("set both RSRS_PASSKEY_RP_ID and RSRS_PASSKEY_ORIGIN, or neither");
         }
-        Self::new(&rp, &origin).map(Some)
+        let mut config = Self::new(&rp, &origin)?;
+        config.trusted_browser =
+            crate::env::var("RSRS_TRUSTED_BROWSER_UNLOCK").as_deref() == Ok("1");
+        Ok(Some(config))
     }
 }
 
@@ -113,14 +119,92 @@ fn credential_id(passkey: &Passkey) -> String {
     URL_SAFE_NO_PAD.encode(passkey.cred_id().as_ref())
 }
 
+/// A device ID is a public selector, never an authentication factor. The
+/// browser-only AES key is deliberately absent from every server data type.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Mode {
+    #[default]
+    Prf,
+    TrustedBrowser,
+}
+
+impl Mode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Prf => "prf",
+            Self::TrustedBrowser => "trusted_browser",
+        }
+    }
+    fn kdf(self) -> &'static str {
+        match self {
+            Self::Prf => WRAPPER_KDF,
+            Self::TrustedBrowser => DEVICE_WRAPPER_KDF,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+struct Binding {
+    mode: Mode,
+    device_id: Option<String>,
+}
+
+impl Binding {
+    fn checked(config: &Config, mode: Mode, device_id: Option<String>) -> Result<Self> {
+        match mode {
+            Mode::Prf if device_id.is_none() => {}
+            Mode::TrustedBrowser if config.trusted_browser => {
+                let id = device_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("device ID required"))?;
+                let uuid = Uuid::parse_str(id)?;
+                if uuid.get_version_num() != 4
+                    || uuid.get_variant() != uuid::Variant::RFC4122
+                    || uuid.to_string() != id
+                {
+                    bail!("canonical random device UUID required");
+                }
+            }
+            _ => bail!("unlock mode unavailable or invalid device binding"),
+        }
+        Ok(Self { mode, device_id })
+    }
+
+    fn check(&self, config: &Config, mode: Mode, device_id: Option<String>) -> Result<()> {
+        if *self != Self::checked(config, mode, device_id)? {
+            bail!("unlock mode or device mismatch");
+        }
+        Ok(())
+    }
+
+    fn decorate(&self, response: &mut Value) {
+        response["mode"] = json!(self.mode);
+        if let Some(device_id) = &self.device_id {
+            response["device_id"] = json!(device_id);
+        }
+    }
+
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            mode: serde_json::from_value(json!(row.get::<_, String>(5)))?,
+            device_id: row.get(6),
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct PendingRegistration {
+    #[serde(default)]
+    binding: Binding,
     registration: PasskeyRegistration,
     label: String,
 }
 
 #[derive(Serialize, Deserialize)]
 struct PendingAssertion {
+    #[serde(default)]
+    binding: Binding,
     authentication: PasskeyAuthentication,
     passkey: Passkey,
     label: String,
@@ -131,16 +215,25 @@ struct PendingAssertion {
 #[serde(deny_unknown_fields)]
 struct StartRegistration {
     label: String,
+    #[serde(default)]
+    mode: Mode,
+    device_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SelectCredential {
     credential_id: String,
+    #[serde(default)]
+    mode: Mode,
+    device_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Finish {
     ceremony_id: String,
+    #[serde(default)]
+    mode: Mode,
+    device_id: Option<String>,
     credential: Value,
     #[serde(default)]
     wrapper: Option<Wrapper>,
@@ -157,7 +250,7 @@ struct Wrapper {
 impl Wrapper {
     fn validate(&self) -> Result<()> {
         if self.version != 1
-            || self.kdf != WRAPPER_KDF
+            || ![WRAPPER_KDF, DEVICE_WRAPPER_KDF].contains(&self.kdf.as_str())
             || canonical_bytes(&self.wrapped_urk)?.len() != 48
             || canonical_bytes(&self.nonce)?.len() != 12
         {
@@ -360,7 +453,7 @@ fn take_ceremony<T: serde::de::DeserializeOwned>(
 }
 
 fn envelope(config: &Config, meta: &Meta, ceremony: &str, public_key: Value) -> Value {
-    json!({"ceremony_id":ceremony,"public_key":public_key,"rp_id":config.rp_id,
+    json!({"ceremony_id":ceremony,"public_key":public_key,"rp_id":config.rp_id,"trusted_browser_enabled":config.trusted_browser,
         "account_id":meta.account_id,"key_generation":meta.key_generation})
 }
 
@@ -373,7 +466,10 @@ fn assertion_envelope(
 ) -> Value {
     let mut response = envelope(config, meta, ceremony, public_key);
     response["credential_id"] = json!(credential_id(&state.passkey));
-    response["prf_salt"] = json!(state.prf_salt);
+    state.binding.decorate(&mut response);
+    if state.binding.mode == Mode::Prf {
+        response["prf_salt"] = json!(state.prf_salt);
+    }
     response
 }
 
@@ -385,7 +481,7 @@ fn current_credential(
     id: &str,
 ) -> Result<Row> {
     tx.query_opt(
-        r#"SELECT passkey,label,prf_salt,wrapper,sign_count FROM vault_passkeys
+        r#"SELECT passkey,label,prf_salt,wrapper,sign_count,mode,device_id FROM vault_passkeys
         WHERE credential_id=$1 AND "user"=$2 AND account_id=$3 AND key_generation=$4
         AND rp_id=$5 AND origin=$6 FOR UPDATE"#,
         &[
@@ -408,12 +504,12 @@ fn list(repo: &BlobRepo, config: &Config, user: &str) -> Result<Value> {
         .is_some();
     if !exists {
         return Ok(
-            json!({"enabled":true,"rp_id":config.rp_id,"origin":config.origin,"credentials":[]}),
+            json!({"enabled":true,"trusted_browser_enabled":config.trusted_browser,"rp_id":config.rp_id,"origin":config.origin,"credentials":[]}),
         );
     }
     let meta = vault(&mut tx, user)?;
     let rows = tx.query(
-        r#"SELECT credential_id,label,created_at,last_used_at,prf_salt
+        r#"SELECT credential_id,label,created_at,last_used_at,prf_salt,mode,device_id
         FROM vault_passkeys WHERE "user"=$1 AND account_id=$2 AND key_generation=$3
         AND rp_id=$4 AND origin=$5 ORDER BY created_at,credential_id"#,
         &[
@@ -427,16 +523,23 @@ fn list(repo: &BlobRepo, config: &Config, user: &str) -> Result<Value> {
     let credentials: Vec<Value> = rows
         .into_iter()
         .map(|r| {
-            json!({
+            let mode: String = r.get(5);
+            let mut entry = json!({
                 "credential_id":r.get::<_, String>(0),"label":r.get::<_, String>(1),
                 "created_at":r.get::<_, String>(2),"last_used_at":r.get::<_, Option<String>>(3),
-                "prf_salt":r.get::<_, String>(4),"key_generation":meta.key_generation,
-            })
+                "mode":mode,"key_generation":meta.key_generation,
+            });
+            if mode == "prf" {
+                entry["prf_salt"] = json!(r.get::<_, String>(4));
+            } else {
+                entry["device_id"] = json!(r.get::<_, Option<String>>(6));
+            }
+            entry
         })
         .collect();
     tx.commit()?;
     Ok(
-        json!({"enabled":true,"rp_id":config.rp_id,"origin":config.origin,
+        json!({"enabled":true,"trusted_browser_enabled":config.trusted_browser,"rp_id":config.rp_id,"origin":config.origin,
         "account_id":meta.account_id,"key_generation":meta.key_generation,"credentials":credentials}),
     )
 }
@@ -449,6 +552,7 @@ fn register_start(
     body: &str,
 ) -> Result<Value> {
     let input: StartRegistration = serde_json::from_str(body)?;
+    let binding = Binding::checked(config, input.mode, input.device_id)?;
     let label = input.label.trim();
     if label.is_empty() || label.chars().count() > 80 || label.chars().any(char::is_control) {
         bail!("label must be 1 to 80 characters");
@@ -483,6 +587,7 @@ fn register_start(
         &meta,
         "register",
         &PendingRegistration {
+            binding: binding.clone(),
             registration,
             label: label.into(),
         },
@@ -493,8 +598,13 @@ fn register_start(
     // library defaults also request UVM/credProtect; those are unnecessary for
     // PRF unlock and may expose additional device information. Its server-side
     // state permits ignored extensions; UV remains required independently.
-    public_key["extensions"] = json!({"prf":{},"credProps":true});
-    Ok(envelope(config, &meta, &id, public_key))
+    public_key["extensions"] = match binding.mode {
+        Mode::Prf => json!({"prf":{},"credProps":true}),
+        Mode::TrustedBrowser => json!({"credProps":true}),
+    };
+    let mut response = envelope(config, &meta, &id, public_key);
+    binding.decorate(&mut response);
+    Ok(response)
 }
 
 fn register_finish(
@@ -513,6 +623,7 @@ fn register_finish(
         &input.ceremony_id,
         "register",
     )?;
+    pending.binding.check(config, input.mode, input.device_id)?;
     if input.wrapper.is_some() {
         bail!("wrapper is only accepted after verified assertion");
     }
@@ -533,10 +644,15 @@ fn register_finish(
         respire::memory::crypto::random_hex(32).as_bytes(),
     ));
     let state = PendingAssertion {
+        binding: pending.binding,
         authentication,
         passkey,
         label: pending.label,
-        prf_salt,
+        prf_salt: if input.mode == Mode::Prf {
+            prf_salt
+        } else {
+            String::new()
+        },
     };
     let mut client = repo.lock();
     let mut tx = client.transaction()?;
@@ -571,6 +687,7 @@ fn register_test(
     let input: Finish = serde_json::from_str(body)?;
     let (meta, mut state) =
         take_ceremony::<PendingAssertion>(repo, config, user, token, &input.ceremony_id, "test")?;
+    state.binding.check(config, input.mode, input.device_id)?;
     if input.wrapper.is_some() {
         bail!("wrapper must be tested locally before committing");
     }
@@ -619,11 +736,14 @@ fn unlock_start(
     let mut tx = client.transaction()?;
     let meta = vault(&mut tx, user)?;
     let row = current_credential(&mut tx, config, user, &meta, &input.credential_id)?;
+    let binding = Binding::from_row(&row)?;
+    binding.check(config, input.mode, input.device_id)?;
     let passkey: Passkey = serde_json::from_str(&row.get::<_, String>(0))?;
     let (options, authentication) = config
         .webauthn
         .start_passkey_authentication(std::slice::from_ref(&passkey))?;
     let state = PendingAssertion {
+        binding,
         authentication,
         passkey,
         label: row.get(1),
@@ -657,6 +777,7 @@ fn assertion_finish(
         &input.ceremony_id,
         if activate { "activate" } else { "unlock" },
     )?;
+    pending.binding.check(config, input.mode, input.device_id)?;
     validate_credential(&input.credential, Some(&meta.account_id))?;
     let credential: PublicKeyCredential = serde_json::from_value(input.credential)?;
     let result = config
@@ -679,6 +800,9 @@ fn assertion_finish(
     let wrapper = if activate {
         let wrapper = input.wrapper.ok_or_else(|| anyhow!("wrapper required"))?;
         wrapper.validate()?;
+        if wrapper.kdf != pending.binding.mode.kdf() {
+            bail!("wrapper does not match unlock mode");
+        }
         let count: i64 = tx
             .query_one(
                 r#"SELECT COUNT(*) FROM vault_passkeys WHERE "user"=$1"#,
@@ -689,11 +813,12 @@ fn assertion_finish(
             bail!("passkey limit reached");
         }
         let inserted = tx.execute(r#"INSERT INTO vault_passkeys
-            (credential_id,"user",account_id,rp_id,origin,key_generation,label,passkey,prf_salt,wrapper,created_at,last_used_at,sign_count)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12) ON CONFLICT (credential_id) DO NOTHING"#,
+            (credential_id,"user",account_id,rp_id,origin,key_generation,label,passkey,prf_salt,wrapper,created_at,last_used_at,sign_count,mode,device_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,$14) ON CONFLICT (credential_id) DO NOTHING"#,
             &[&id,&user,&meta.account_id,&config.rp_id,&config.origin,&meta.key_generation,
               &pending.label,&serde_json::to_string(&pending.passkey)?,&pending.prf_salt,
-              &serde_json::to_string(&wrapper)?,&timestamp(),&i64::from(result.counter())])?;
+              &serde_json::to_string(&wrapper)?,&timestamp(),&i64::from(result.counter()),
+              &pending.binding.mode.as_str(),&pending.binding.device_id])?;
         if inserted != 1 {
             bail!("credential already registered");
         }
@@ -703,6 +828,9 @@ fn assertion_finish(
             bail!("unlock cannot replace a wrapper");
         }
         let row = current_credential(&mut tx, config, user, &meta, &id)?;
+        if Binding::from_row(&row)? != pending.binding {
+            bail!("credential mode or device changed");
+        }
         let old_count: i64 = row.get(4);
         let new_count = i64::from(result.counter());
         if (old_count != 0 || new_count != 0) && new_count <= old_count {
@@ -720,14 +848,40 @@ fn assertion_finish(
     if activate {
         return Ok(json!({"ok":true}));
     }
-    Ok(
-        json!({"wrapper":wrapper,"credential_id":id,"prf_salt":pending.prf_salt,
-        "rp_id":config.rp_id,"account_id":meta.account_id,"key_generation":meta.key_generation}),
-    )
+    let mut response = json!({"wrapper":wrapper,"credential_id":id,
+        "rp_id":config.rp_id,"account_id":meta.account_id,"key_generation":meta.key_generation});
+    pending.binding.decorate(&mut response);
+    if pending.binding.mode == Mode::Prf {
+        response["prf_salt"] = json!(pending.prf_salt);
+    }
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveCredential {
+    credential_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelCeremony {
+    ceremony_id: String,
+}
+
+fn cancel(repo: &BlobRepo, user: &str, token: &str, body: &str) -> Result<Value> {
+    let input: CancelCeremony = serde_json::from_str(body)?;
+    Uuid::parse_str(&input.ceremony_id)?;
+    // Cancellation only removes pending state. An in-flight commit can already
+    // have consumed it; this response must not imply activation was prevented.
+    repo.lock().execute(
+        r#"DELETE FROM vault_passkey_ceremonies WHERE id=$1 AND "user"=$2 AND session_hash=$3"#,
+        &[&input.ceremony_id, &user, &token_hash(token)],
+    )?;
+    Ok(json!({"ok":true}))
 }
 
 fn remove(repo: &BlobRepo, user: &str, body: &str) -> Result<Value> {
-    let input: SelectCredential = serde_json::from_str(body)?;
+    let input: RemoveCredential = serde_json::from_str(body)?;
     let mut client = repo.lock();
     let mut tx = client.transaction()?;
     vault(&mut tx, user)?;
@@ -768,7 +922,7 @@ pub(super) fn route(
                 } else {
                     404
                 },
-                json!({"enabled":false,"credentials":[],"error":"passkey unlock is disabled"}),
+                json!({"enabled":false,"trusted_browser_enabled":false,"credentials":[],"error":"passkey unlock is disabled"}),
             ))
         }
         Err(_) => {
@@ -804,6 +958,7 @@ fn route_config(
         ("POST", "/unlock/start") => unlock_start(repo, config, user, token, body),
         ("POST", "/unlock/finish") => assertion_finish(repo, config, user, token, body, false),
         ("POST", "/remove") => remove(repo, user, body),
+        ("POST", "/cancel") => cancel(repo, user, token, body),
         _ => return super::json::json(404, json!({"error":"not found"})),
     };
     match result {
@@ -929,6 +1084,437 @@ mod tests {
         data[field] = value;
         credential["response"]["clientDataJSON"] =
             json!(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&data)?));
+        Ok(())
+    }
+
+    const DEVICE: &str = "11111111-2222-4333-8444-555555555555";
+
+    fn trusted_body(envelope: &Value, mut credential: Value) -> Value {
+        credential["clientExtensionResults"] = json!({});
+        let mut body = finish_body(envelope, credential);
+        body["mode"] = json!("trusted_browser");
+        body["device_id"] = envelope["device_id"].clone();
+        body
+    }
+    fn trusted_select(envelope: &Value) -> String {
+        json!({"credential_id":envelope["credential_id"],"mode":"trusted_browser",
+            "device_id":envelope["device_id"]})
+        .to_string()
+    }
+    fn trusted_wrapper() -> Wrapper {
+        Wrapper {
+            kdf: DEVICE_WRAPPER_KDF.into(),
+            ..wrapper()
+        }
+    }
+    fn trusted_pending(
+        repo: &BlobRepo,
+        config: &Config,
+        auth: &mut Authenticator,
+    ) -> Result<Value> {
+        let start = register_start(
+            repo,
+            config,
+            USER,
+            TOKEN,
+            &json!({"label":"This browser","mode":"trusted_browser","device_id":DEVICE})
+                .to_string(),
+        )?;
+        assert_eq!(start["public_key"]["extensions"], json!({"credProps":true}));
+        assert_eq!(start["mode"], "trusted_browser");
+        assert_eq!(start["device_id"], DEVICE);
+        let credential = make_registration(auth, config, &start)?;
+        register_finish(
+            repo,
+            config,
+            USER,
+            TOKEN,
+            &trusted_body(&start, credential).to_string(),
+        )
+    }
+    fn trusted_activate(
+        repo: &BlobRepo,
+        config: &Config,
+        auth: &mut Authenticator,
+    ) -> Result<Value> {
+        let test = trusted_pending(repo, config, auth)?;
+        assert!(test.get("prf_salt").is_none());
+        let credential = make_assertion(auth, config, &test)?;
+        let activate = register_test(
+            repo,
+            config,
+            USER,
+            TOKEN,
+            &trusted_body(&test, credential).to_string(),
+        )?;
+        assert_ne!(
+            activate["public_key"]["challenge"],
+            test["public_key"]["challenge"]
+        );
+        Ok(activate)
+    }
+    fn trusted_enroll(repo: &BlobRepo, config: &Config, auth: &mut Authenticator) -> Result<Value> {
+        let activate = trusted_activate(repo, config, auth)?;
+        let credential = make_assertion(auth, config, &activate)?;
+        let mut body = trusted_body(&activate, credential);
+        body["wrapper"] = serde_json::to_value(trusted_wrapper())?;
+        assertion_finish(repo, config, USER, TOKEN, &body.to_string(), true)?;
+        assert!(assertion_finish(repo, config, USER, TOKEN, &body.to_string(), true).is_err());
+        Ok(activate)
+    }
+
+    #[test]
+    fn trusted_browser_explicit_opt_in_and_canonical_device_binding() -> Result<()> {
+        let (repo, mut config, _) = fixture()?;
+        let valid = json!({"label":"Browser","mode":"trusted_browser","device_id":DEVICE});
+        assert!(!list(&repo, &config, USER)?["trusted_browser_enabled"]
+            .as_bool()
+            .context("flag")?);
+        assert!(register_start(&repo, &config, USER, TOKEN, &valid.to_string()).is_err());
+        config.trusted_browser = true;
+        for (mode, device) in [
+            ("unknown", json!(DEVICE)),
+            ("prf", json!(DEVICE)),
+            ("trusted_browser", Value::Null),
+            ("trusted_browser", json!("bad")),
+            (
+                "trusted_browser",
+                json!("11111111-2222-1333-8444-555555555555"),
+            ),
+            (
+                "trusted_browser",
+                json!("11111111-2222-4333-7444-555555555555"),
+            ),
+            (
+                "trusted_browser",
+                json!("AAAAAAAA-2222-4333-8444-555555555555"),
+            ),
+        ] {
+            assert!(register_start(
+                &repo,
+                &config,
+                USER,
+                TOKEN,
+                &json!({"label":"Browser","mode":mode,"device_id":device}).to_string()
+            )
+            .is_err());
+        }
+        register_start(&repo, &config, USER, TOKEN, &valid.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_browser_without_prf_keeps_recovery_and_requires_two_fresh_assertions() -> Result<()>
+    {
+        let (repo, mut config, mut auth) = fixture()?;
+        config.trusted_browser = true;
+        let recovery = repo.get_vault(USER)?;
+        let test = trusted_pending(&repo, &config, &mut auth)?;
+        let mut skip = trusted_body(&test, make_assertion(&mut auth, &config, &test)?);
+        skip["wrapper"] = serde_json::to_value(trusted_wrapper())?;
+        assert!(assertion_finish(&repo, &config, USER, TOKEN, &skip.to_string(), true).is_err());
+        skip.as_object_mut().context("body")?.remove("wrapper");
+        let activate = register_test(&repo, &config, USER, TOKEN, &skip.to_string())?;
+        assert!(register_test(&repo, &config, USER, TOKEN, &skip.to_string()).is_err());
+        assert_eq!(list(&repo, &config, USER)?["credentials"], json!([]));
+        let mut commit = trusted_body(&activate, make_assertion(&mut auth, &config, &activate)?);
+        commit["wrapper"] = serde_json::to_value(trusted_wrapper())?;
+        assertion_finish(&repo, &config, USER, TOKEN, &commit.to_string(), true)?;
+        let listed = list(&repo, &config, USER)?;
+        assert_eq!(listed["credentials"][0]["mode"], "trusted_browser");
+        assert_eq!(listed["credentials"][0]["device_id"], DEVICE);
+        assert!(listed["credentials"][0].get("prf_salt").is_none());
+        assert!(!listed.to_string().contains("wrapped_urk"));
+        let options = unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&activate))?;
+        let body = trusted_body(&options, make_assertion(&mut auth, &config, &options)?);
+        let released = assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), false)?;
+        assert_eq!(
+            released["wrapper"],
+            serde_json::to_value(trusted_wrapper())?
+        );
+        for key in [
+            "account_id",
+            "rp_id",
+            "credential_id",
+            "key_generation",
+            "mode",
+            "device_id",
+        ] {
+            assert_eq!(released[key], activate[key], "{key}");
+        }
+        assert!(released.get("prf_salt").is_none());
+        assert!(assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), false).is_err());
+        assert_eq!(repo.get_vault(USER)?, recovery);
+        config.trusted_browser = false;
+        assert!(unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&activate)).is_err());
+        // Disabling enrollment/unlock never blocks account-owner revocation.
+        remove(&repo, USER, &select(&activate))?;
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_mode_cannot_be_switched_or_commit_prf_wrappers() -> Result<()> {
+        let (repo, mut config, mut auth) = fixture()?;
+        config.trusted_browser = true;
+        for stage in 0..4 {
+            let envelope = if stage == 0 {
+                register_start(
+                    &repo,
+                    &config,
+                    USER,
+                    TOKEN,
+                    &json!({"label":"Browser","mode":"trusted_browser","device_id":DEVICE})
+                        .to_string(),
+                )?
+            } else if stage == 1 {
+                trusted_pending(&repo, &config, &mut auth)?
+            } else {
+                trusted_activate(&repo, &config, &mut auth)?
+            };
+            let credential = if stage == 0 {
+                make_registration(&mut auth, &config, &envelope)?
+            } else {
+                make_assertion(&mut auth, &config, &envelope)?
+            };
+            let mut body = trusted_body(&envelope, credential);
+            if stage == 3 {
+                body["wrapper"] = serde_json::to_value(wrapper())?;
+            } else {
+                body["device_id"] = json!(Uuid::new_v4().to_string());
+            }
+            let result = match stage {
+                0 => register_finish(&repo, &config, USER, TOKEN, &body.to_string()),
+                1 => register_test(&repo, &config, USER, TOKEN, &body.to_string()),
+                _ => assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), true),
+            };
+            assert!(result.is_err());
+        }
+        let prf = pending_test(&repo, &config, &mut auth)?;
+        // Schema-8 pending state has no binding field; its default stays PRF.
+        repo.lock().execute("UPDATE vault_passkey_ceremonies SET state=(state::jsonb - 'binding')::text WHERE id=$1",
+            &[&prf["ceremony_id"].as_str().context("ceremony")?])?;
+        let activate = register_test(
+            &repo,
+            &config,
+            USER,
+            TOKEN,
+            &finish_body(&prf, make_assertion(&mut auth, &config, &prf)?).to_string(),
+        )?;
+        let mut body = finish_body(&activate, make_assertion(&mut auth, &config, &activate)?);
+        body["wrapper"] = serde_json::to_value(trusted_wrapper())?;
+        assert!(assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), true).is_err());
+        assert_eq!(list(&repo, &config, USER)?["credentials"], json!([]));
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_unlock_enforces_device_account_session_uv_expiry_generation_and_counters(
+    ) -> Result<()> {
+        let (repo, mut config, mut auth) = fixture()?;
+        config.trusted_browser = true;
+        let active = trusted_enroll(&repo, &config, &mut auth)?;
+        repo.register("other-user", "hash", "salt")?
+            .context("other")?;
+        repo.put_vault("other-user", "0011223344556677", "other", "n", 4)?;
+        assert!(unlock_start(
+            &repo,
+            &config,
+            "other-user",
+            TOKEN,
+            &trusted_select(&active)
+        )
+        .is_err());
+        assert!(unlock_start(&repo, &config, USER, TOKEN, &select(&active)).is_err());
+        let mut wrong: Value = serde_json::from_str(&trusted_select(&active))?;
+        wrong["device_id"] = json!(Uuid::new_v4().to_string());
+        assert!(unlock_start(&repo, &config, USER, TOKEN, &wrong.to_string()).is_err());
+        for kind in 0..7 {
+            let mut options = unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&active))?;
+            if kind == 0 {
+                options["public_key"]["userVerification"] = json!("discouraged");
+            }
+            let mut body = trusted_body(&options, make_assertion(&mut auth, &config, &options)?);
+            if kind == 1 {
+                // A correctly bound, signed request must still belong to this
+                // account/session; foreign attempts must not consume it.
+                assert!(assertion_finish(
+                    &repo,
+                    &config,
+                    "other-user",
+                    TOKEN,
+                    &body.to_string(),
+                    false
+                )
+                .is_err());
+                assert!(assertion_finish(
+                    &repo,
+                    &config,
+                    USER,
+                    "other-session",
+                    &body.to_string(),
+                    false
+                )
+                .is_err());
+            }
+            match kind {
+                1 => body["device_id"] = json!(Uuid::new_v4().to_string()),
+                2 => {
+                    body["mode"] = json!("prf");
+                    body.as_object_mut().context("body")?.remove("device_id");
+                }
+                3 => {
+                    repo.lock().execute(
+                        "UPDATE vault_passkey_ceremonies SET expires_at=$1",
+                        &[&now()],
+                    )?;
+                }
+                4 => {
+                    repo.lock()
+                        .execute("UPDATE vault_passkey_ceremonies SET key_generation=0", &[])?;
+                }
+                5 => {
+                    body["credential"]["id"] = json!(URL_SAFE_NO_PAD.encode([1; 32]));
+                    body["credential"]["rawId"] = body["credential"]["id"].clone();
+                }
+                6 => {
+                    config.trusted_browser = false;
+                }
+                _ => {}
+            }
+            assert!(
+                assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), false).is_err(),
+                "{kind}"
+            );
+            config.trusted_browser = true;
+            body["mode"] = json!("trusted_browser");
+            body["device_id"] = json!(DEVICE);
+            assert!(
+                assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), false).is_err()
+            );
+        }
+        let a = unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&active))?;
+        let b = unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&active))?;
+        let first = trusted_body(&a, make_assertion(&mut auth, &config, &a)?);
+        let second = trusted_body(&b, make_assertion(&mut auth, &config, &b)?);
+        assertion_finish(&repo, &config, USER, TOKEN, &second.to_string(), false)?;
+        assert!(assertion_finish(&repo, &config, USER, TOKEN, &first.to_string(), false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_cancel_is_session_scoped_and_never_claims_commit_rollback() -> Result<()> {
+        let (repo, mut config, mut auth) = fixture()?;
+        config.trusted_browser = true;
+        for phase in 0..3 {
+            let options = if phase == 0 {
+                trusted_pending(&repo, &config, &mut auth)?
+            } else {
+                trusted_activate(&repo, &config, &mut auth)?
+            };
+            let cancel_body = json!({"ceremony_id":options["ceremony_id"]}).to_string();
+            cancel(&repo, "other-user", TOKEN, &cancel_body)?;
+            cancel(&repo, USER, "other-session", &cancel_body)?;
+            let mut body = trusted_body(&options, make_assertion(&mut auth, &config, &options)?);
+            if phase == 2 {
+                body["wrapper"] = serde_json::to_value(trusted_wrapper())?;
+                assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), true)?;
+            }
+            cancel(&repo, USER, TOKEN, &cancel_body)?;
+            cancel(&repo, USER, TOKEN, &cancel_body)?;
+            assert!(register_test(&repo, &config, USER, TOKEN, &body.to_string()).is_err());
+            assert!(
+                assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), true).is_err()
+            );
+        }
+        assert_eq!(
+            list(&repo, &config, USER)?["credentials"]
+                .as_array()
+                .context("list")?
+                .len(),
+            1,
+            "cancel after committed activation must not silently revoke a key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_rewrap_preserves_and_reset_or_removal_revokes_pending_unlocks() -> Result<()> {
+        let (repo, mut config, mut auth) = fixture()?;
+        config.trusted_browser = true;
+        for operation in 0..3 {
+            let active = trusted_enroll(&repo, &config, &mut auth)?;
+            let generation = active["key_generation"].as_i64().context("generation")?;
+            repo.write_vault_operation(
+                USER,
+                "0011223344556677",
+                "same-urk-rewrapped",
+                "n",
+                4,
+                false,
+                true,
+                Some(generation),
+                false,
+            )?;
+            let options = unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&active))?;
+            let body = trusted_body(&options, make_assertion(&mut auth, &config, &options)?);
+            assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), false)?;
+            let options = unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&active))?;
+            let body = trusted_body(&options, make_assertion(&mut auth, &config, &options)?);
+            match operation {
+                0 => {
+                    remove(&repo, USER, &select(&active))?;
+                }
+                1 => {
+                    repo.write_vault_operation(
+                        USER,
+                        "0011223344556677",
+                        "new-urk",
+                        "n",
+                        4,
+                        false,
+                        false,
+                        Some(generation),
+                        true,
+                    )?;
+                }
+                _ => {
+                    repo.put_vault(USER, "0011223344556677", "legacy-new-urk", "n", 4)?;
+                }
+            }
+            assert!(
+                assertion_finish(&repo, &config, USER, TOKEN, &body.to_string(), false).is_err()
+            );
+            assert_eq!(list(&repo, &config, USER)?["credentials"], json!([]));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_pending_and_active_resource_caps_are_shared_with_prf() -> Result<()> {
+        let (repo, mut config, mut auth) = fixture()?;
+        config.trusted_browser = true;
+        let active = trusted_enroll(&repo, &config, &mut auth)?;
+        for _ in 0..MAX_PENDING {
+            unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&active))?;
+        }
+        assert!(unlock_start(&repo, &config, USER, TOKEN, &trusted_select(&active)).is_err());
+        assert!(register_start(&repo, &config, USER, TOKEN, r#"{"label":"PRF"}"#).is_err());
+        repo.lock()
+            .execute("DELETE FROM vault_passkey_ceremonies", &[])?;
+        // Synthetic rows exercise the shared account limit without 20 ceremonies.
+        repo.lock().execute(r#"INSERT INTO vault_passkeys
+            (credential_id,"user",account_id,rp_id,origin,key_generation,label,passkey,prf_salt,wrapper,created_at,mode,device_id)
+            SELECT credential_id || n::text,"user",account_id,rp_id,origin,key_generation,label,passkey,prf_salt,wrapper,created_at,mode,device_id
+            FROM vault_passkeys CROSS JOIN generate_series(1,19) AS n"#, &[])?;
+        assert!(register_start(
+            &repo,
+            &config,
+            USER,
+            TOKEN,
+            &json!({"label":"Overflow","mode":"trusted_browser","device_id":DEVICE}).to_string()
+        )
+        .is_err());
+        assert!(register_start(&repo, &config, USER, TOKEN, r#"{"label":"PRF"}"#).is_err());
         Ok(())
     }
 
@@ -1529,6 +2115,7 @@ mod tests {
             413
         );
         for suffix in [
+            "/cancel",
             "/register/start",
             "/register/finish",
             "/register/test",
@@ -1583,6 +2170,7 @@ mod tests {
         let (repo, _, _) = fixture()?;
         for path in [
             "/api/self/passkeys/register/start",
+            "/api/self/passkeys/cancel",
             "/api/self/passkeys/remove",
             "/api/self/vault/reset",
         ] {
@@ -1598,6 +2186,7 @@ mod tests {
         )?;
         for path in [
             "/api/self/passkeys/register/start",
+            "/api/self/passkeys/cancel",
             "/api/self/passkeys/remove",
             "/api/self/passkeys/unlock/start",
             "/api/self/vault/reset",

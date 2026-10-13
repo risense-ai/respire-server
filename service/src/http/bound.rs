@@ -282,6 +282,8 @@ async fn handle_request(
     peer: SocketAddr,
     permit: Arc<OwnedSemaphorePermit>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let private_passkey_response = req.uri().path() == "/api/self/passkeys"
+        || req.uri().path().starts_with("/api/self/passkeys/");
     let origin = app.cors.allowed_origin(req.headers());
     let preflight = req.method() == Method::OPTIONS;
     let mut response = if preflight {
@@ -296,6 +298,12 @@ async fn handle_request(
     } else {
         handle_api_request(req, app, peer, permit).await?
     };
+    if private_passkey_response {
+        response.headers_mut().insert(
+            hyper::header::CACHE_CONTROL,
+            hyper::header::HeaderValue::from_static("no-store"),
+        );
+    }
     Cors::decorate(&mut response, origin, preflight);
     Ok(response)
 }
