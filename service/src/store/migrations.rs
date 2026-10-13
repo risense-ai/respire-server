@@ -57,6 +57,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0007_passkey_unlock.sql",
         sql: include_str!("migrations/0007_passkey_unlock.sql"),
     },
+    Migration {
+        version: 9,
+        name: "0008_trusted_browser_unlock.sql",
+        sql: include_str!("migrations/0008_trusted_browser_unlock.sql"),
+    },
 ];
 
 pub(crate) fn apply(client: &mut Client) -> Result<()> {
@@ -356,6 +361,76 @@ mod tests {
         assert_eq!(row.get::<_, i64>(5),1);
         apply(&mut client)?;
         assert_eq!(client.query_one(r#"SELECT account_id FROM vault WHERE "user"='upgrade-vault'"#,&[])?.get::<_,String>(0),account);
+        Ok(())
+    }
+
+    #[test]
+    fn v8_trusted_browser_upgrade_preserves_prf_rows_and_enforces_mode_device_constraint(
+    ) -> Result<()> {
+        let repo = crate::store::connect_unique()?;
+        repo.register("upgrade-mode", "hash", "salt")?;
+        repo.put_vault(
+            "upgrade-mode",
+            "0011223344556677",
+            "recovery-wrapper",
+            "nonce",
+            4,
+        )?;
+        let before = repo.get_vault("upgrade-mode")?;
+        let mut client = repo.lock();
+        client.batch_execute(r#"
+            ALTER TABLE vault_passkeys DROP CONSTRAINT vault_passkeys_mode_device;
+            ALTER TABLE vault_passkeys DROP COLUMN mode, DROP COLUMN device_id;
+            UPDATE schema_meta SET v='8' WHERE k='version';
+            INSERT INTO vault_passkeys
+                (credential_id,"user",account_id,rp_id,origin,key_generation,label,passkey,prf_salt,wrapper,created_at,sign_count)
+                SELECT 'existing-prf',"user",account_id,'dash.example.com','https://dash.example.com',
+                    key_generation,'Existing PRF','public-key-state','public-prf-salt','opaque-prf-wrapper','before',42
+                FROM vault WHERE "user"='upgrade-mode';
+            INSERT INTO vault_passkey_ceremonies
+                (id,"user",session_hash,account_id,key_generation,rp_id,origin,kind,state,expires_at)
+                SELECT 'old-pending',"user",'session-hash',account_id,key_generation,'dash.example.com',
+                    'https://dash.example.com','test','old-state',9999999999 FROM vault WHERE "user"='upgrade-mode';
+        "#)?;
+        apply(&mut client)?;
+        assert_eq!(version_of(&mut client)?, CURRENT_SCHEMA_VERSION);
+        let row = client.query_one(
+            "SELECT mode,device_id,wrapper,passkey,prf_salt,sign_count FROM vault_passkeys",
+            &[],
+        )?;
+        assert_eq!(row.get::<_, String>(0), "prf");
+        assert_eq!(row.get::<_, Option<String>>(1), None);
+        assert_eq!(row.get::<_, String>(2), "opaque-prf-wrapper");
+        assert_eq!(row.get::<_, String>(3), "public-key-state");
+        assert_eq!(row.get::<_, String>(4), "public-prf-salt");
+        assert_eq!(row.get::<_, i64>(5), 42);
+        assert_eq!(
+            client
+                .query_one("SELECT state FROM vault_passkey_ceremonies", &[])?
+                .get::<_, String>(0),
+            "old-state"
+        );
+        for (mode, device) in [
+            ("unknown", None),
+            ("trusted_browser", None),
+            ("prf", Some("11111111-2222-4333-8444-555555555555")),
+            ("trusted_browser", Some("invalid-device")),
+            (
+                "trusted_browser",
+                Some("11111111-2222-1333-8444-555555555555"),
+            ),
+        ] {
+            assert!(client
+                .execute(
+                    "UPDATE vault_passkeys SET mode=$1,device_id=$2",
+                    &[&mode, &device]
+                )
+                .is_err());
+        }
+        client.execute("UPDATE vault_passkeys SET mode='trusted_browser',device_id='11111111-2222-4333-8444-555555555555'", &[])?;
+        apply(&mut client)?;
+        drop(client);
+        assert_eq!(repo.get_vault("upgrade-mode")?, before);
         Ok(())
     }
 

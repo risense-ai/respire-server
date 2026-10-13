@@ -331,3 +331,28 @@ fn cors_with_database_preserves_user_admin_and_readonly_authorization() -> Resul
     }
     Ok(())
 }
+
+#[test]
+fn passkey_transport_never_caches_wrappers_ceremonies_or_errors() -> Result<()> {
+    for (method, path, status) in [
+        ("GET", "/api/self/passkeys", 200),
+        ("POST", "/api/self/passkeys/unlock/finish", 200),
+        ("POST", "/api/self/passkeys/register/start", 400),
+        ("POST", "/api/self/passkeys/register/commit", 503),
+    ] {
+        let handler: Handler = Box::new(move |job| {
+            let _ = job.reply.send((status, "{\"synthetic\":true}".into()));
+        });
+        let response = exchange(&request(method, path, "", "{}"), Some(handler), 50)?;
+        assert!(response
+            .to_ascii_lowercase()
+            .contains("cache-control: no-store\r\n"));
+    }
+    let oversized = "POST /api/self/passkeys/unlock/finish HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65\r\n\r\n";
+    let response = exchange(oversized.as_bytes(), None, 50)?;
+    assert!(response.starts_with("HTTP/1.1 413 "));
+    assert!(response
+        .to_ascii_lowercase()
+        .contains("cache-control: no-store\r\n"));
+    Ok(())
+}

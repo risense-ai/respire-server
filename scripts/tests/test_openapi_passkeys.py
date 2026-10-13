@@ -115,6 +115,66 @@ class PasskeyOpenApiTests(unittest.TestCase):
             self.assertIs(SCHEMAS[expected]["additionalProperties"], False)
             self.assert_valid(path, request_for(path))
 
+    def test_trusted_requests_require_explicit_mode_and_canonical_device(self):
+        for path in ENDPOINT_SCHEMAS:
+            body = request_for(path)
+            body.update(mode="trusted_browser", device_id="11111111-2222-4333-8444-555555555555")
+            body["credential"]["clientExtensionResults"] = {}
+            if path == COMMIT:
+                body["wrapper"]["kdf"] = "trusted-browser-aes256gcm-v1"
+            self.assert_valid(path, body)
+            for mutation in [
+                {"mode": "prf"}, {"mode": "unknown"}, {"device_id": None},
+                {"device_id": "bad"}, {"device_id": "11111111-2222-1333-8444-555555555555"},
+                {"device_id": "11111111-2222-4333-7444-555555555555"},
+            ]:
+                bad = copy.deepcopy(body)
+                bad.update(mutation)
+                self.assert_invalid(path, bad)
+            for field in ["mode", "device_id"]:
+                bad = copy.deepcopy(body)
+                del bad[field]
+                self.assert_invalid(path, bad)
+            bad = copy.deepcopy(body)
+            bad["device_key"] = "must-never-be-sent"
+            self.assert_invalid(path, bad)
+
+    def test_feature_flag_is_not_an_accepted_prf_capability(self):
+        for path in ENDPOINT_SCHEMAS:
+            body = request_for(path)
+            body["credential"]["clientExtensionResults"]["prf"]["trusted_browser_enabled"] = True
+            self.assert_invalid(path, body)
+
+    def test_commit_wrapper_types_cannot_cross_modes(self):
+        body = request_for(COMMIT)
+        body["wrapper"]["kdf"] = "trusted-browser-aes256gcm-v1"
+        self.assert_invalid(COMMIT, body)
+        body.update(mode="trusted_browser", device_id="11111111-2222-4333-8444-555555555555")
+        self.assert_valid(COMMIT, body)
+        body["wrapper"]["kdf"] = "webauthn-prf-hkdf-sha256-v1"
+        self.assert_invalid(COMMIT, body)
+
+    def test_start_select_cancel_and_revoke_have_closed_mode_specific_schemas(self):
+        def validator(path):
+            request = DOCUMENT["paths"]["/api/self/passkeys/" + path]["post"]["requestBody"]["content"]["application/json"]["schema"]
+            return Draft7Validator({"definitions": json_schema(SCHEMAS), **json_schema(request)}, format_checker=FormatChecker())
+        for path, body in [("register/start", {"label": "This browser"}),
+                           ("unlock/start", {"credential_id": encoded(bytes(32))})]:
+            schema = validator(path)
+            self.assertTrue(schema.is_valid(body))
+            body["device_id"] = "11111111-2222-4333-8444-555555555555"
+            self.assertFalse(schema.is_valid(body))
+            body["mode"] = "trusted_browser"
+            self.assertTrue(schema.is_valid(body))
+            body["mode"] = "prf"
+            self.assertFalse(schema.is_valid(body))
+        for path, body in [("cancel", {"ceremony_id": "11111111-2222-4333-8444-555555555555"}),
+                           ("remove", {"credential_id": encoded(bytes(32))})]:
+            schema = validator(path)
+            self.assertTrue(schema.is_valid(body))
+            body["device_id"] = "11111111-2222-4333-8444-555555555555"
+            self.assertFalse(schema.is_valid(body))
+
     def test_registration_accepts_optional_public_capability_hints(self):
         for extensions in [None, {}, {"prf": {}}, {"prf": {"enabled": False}},
                            {"credProps": {}}, {"credProps": {"rk": True}},
