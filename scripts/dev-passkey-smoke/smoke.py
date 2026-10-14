@@ -628,23 +628,40 @@ class Smoke:
                 self.cleanup_events.append({'user': owner['user'], 'state': 'identity-unverified-cleanup-skipped'})
                 self.checkpoint()
                 continue
-            try:
-                listing = self.request('GET', P, owner=owner)
-                for entry in listing.get('credentials', []):
-                    self.request('POST', P + '/remove', {'credential_id': entry['credential_id']}, owner)
-                for account, ceremony in self.pending:
-                    if account is owner:
-                        self.request('POST', P + '/cancel', {'ceremony_id': ceremony}, owner)
-                for session in reversed(owner['sessions']):
-                    self.request('POST', '/api/self/sessions/' + urllib.parse.quote(session, safe='') + '/revoke', {}, owner)
-                self.request('GET', '/api/self', owner=owner, expected=401)
-                self.cleanup_events.append({'user': owner['user'], 'state': 'passkeys-ceremonies-sessions-revoked-fixture-history-retained'})
-                self.checkpoint()
-            except TotalDeadline:
-                raise
-            except Exception:
-                self.cleanup_events.append({'user': owner['user'], 'state': 'cleanup-incomplete-manual-review-required'})
-                self.checkpoint()
+            incomplete = False
+
+            def attempt(method, path, body=None, expected=200):
+                nonlocal incomplete
+                try:
+                    return self.request(method, path, body, owner, expected=expected)
+                except TotalDeadline:
+                    raise
+                except Exception:
+                    # A failed optional removal must not strand bearer sessions.
+                    # No retries and no exception details are logged.
+                    incomplete = True
+                    return None
+
+            listing = attempt('GET', P)
+            entries = listing.get('credentials') if isinstance(listing, dict) else None
+            if not isinstance(entries, list):
+                incomplete = True
+            else:
+                for entry in entries:
+                    credential = entry.get('credential_id') if isinstance(entry, dict) else None
+                    if not isinstance(credential, str) or not credential:
+                        incomplete = True
+                        continue
+                    attempt('POST', P + '/remove', {'credential_id': credential})
+            for account, ceremony in self.pending:
+                if account is owner:
+                    attempt('POST', P + '/cancel', {'ceremony_id': ceremony})
+            for session in reversed(owner['sessions']):
+                attempt('POST', '/api/self/sessions/' + urllib.parse.quote(session, safe='') + '/revoke', {})
+            attempt('GET', '/api/self', expected=401)
+            self.cleanup_events.append({'user': owner['user'], 'state': 'cleanup-incomplete-manual-review-required' if incomplete
+                                        else 'passkeys-ceremonies-sessions-revoked-fixture-history-retained'})
+            self.checkpoint()
 
     def report(self, failure):
         return {'ok': failure is None, 'failure_code': failure, 'source_revision_required': SHA, 'schema_required': 9,

@@ -26,6 +26,41 @@ def args(**overrides):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_cleanup_failures_do_not_skip_later_session_revocation(self):
+        for failed in ('listing', 'remove', 'cancel', 'session'):
+            with self.subTest(failed=failed):
+                runner = smoke.Smoke(args())
+                owner = dict(user='tb-smoke-synthetic', confirmed=True, identity_verified=True,
+                             sessions=['original', 'other'])
+                runner.accounts = [owner]
+                runner.pending = [(owner, 'pending')]
+                calls = []
+                def request(method, path, body=None, token_owner=None, expected=200):
+                    calls.append((method, path, expected))
+                    if ((failed == 'listing' and path == smoke.P)
+                        or (failed == 'remove' and path.endswith('/remove'))
+                        or (failed == 'cancel' and path.endswith('/cancel'))
+                        or (failed == 'session' and '/other/revoke' in path)):
+                        raise smoke.RequestDeadline()
+                    return {'credentials': [{'credential_id': 'synthetic'}]} if path == smoke.P else {}
+                runner.request = request
+                runner.cleanup()
+                self.assertIn(('POST', '/api/self/sessions/original/revoke', 200), calls)
+                self.assertEqual(calls[-1], ('GET', '/api/self', 401))
+                self.assertEqual(runner.cleanup_events[0]['state'], 'cleanup-incomplete-manual-review-required')
+
+    def test_malformed_cleanup_listing_still_revokes_sessions(self):
+        for listing in ([], {}, {'credentials': None}, {'credentials': [{}]}, {'credentials': [None]}):
+            with self.subTest(listing=listing):
+                runner = smoke.Smoke(args())
+                runner.accounts = [dict(user='tb-smoke-synthetic', confirmed=True,
+                                        identity_verified=True, sessions=['original'])]
+                runner.request = Mock(side_effect=[listing, {}, {}])
+                runner.cleanup()
+                self.assertEqual(runner.request.call_args_list[1].args[1], '/api/self/sessions/original/revoke')
+                self.assertEqual(runner.request.call_args_list[2].kwargs['expected'], 401)
+                self.assertEqual(runner.cleanup_events[0]['state'], 'cleanup-incomplete-manual-review-required')
+
     def test_target_and_approval_fail_before_network(self):
         for settings in [args(base_url='https://api.rsrs.rs'), args(approve_synthetic_dev=False),
                          args(local_test=True, base_url=smoke.DEV),
