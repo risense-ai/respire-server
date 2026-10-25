@@ -12,6 +12,16 @@ on:
         default: false
   pull_request:
   push:
+    paths-ignore:
+      - '.github/scripts/cleanup_artifacts.py'
+      - '.github/scripts/test_cleanup_artifacts.py'
+      - '.github/cleanup-policy.json'
+      - '.github/workflows/cleanup-artifacts.yml'
+      - '.github/workflows/cleanup-policy-tests.yml'
+      - '.github/workflows/server-image.yml'
+      - '.github/workflows/api-deployment-artifact.yml'
+      - '.github/workflows/dev-passkey-smoke.yml'
+      - 'docs/artifact-cleanup.md'
     branches: [main]
     tags: ['v*']
 

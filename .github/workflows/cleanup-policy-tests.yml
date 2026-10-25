@@ -1,0 +1,16 @@
+name: Cleanup policy safety checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  cleanup-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s .github/scripts -p 'test_cleanup_artifacts.py' -v
+      - run: git diff --check

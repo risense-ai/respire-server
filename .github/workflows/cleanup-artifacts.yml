@@ -1,0 +1,46 @@
+name: Clean consumed Actions artifacts
+on:
+  schedule:
+    - cron: '11,26,41,56 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only audit eligible artifacts; do not delete
+        type: boolean
+        default: true
+      consumed_run:
+        description: Optional exact external-delivery run; operator confirms ALL consumers ended at least one hour ago
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  cleanup:
+    if: github.repository == 'risense-ai/respire-server' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+    concurrency:
+      group: consumed-actions-artifacts-cleanup
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Audit or remove only receipted consumed artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPLY: ${{ github.event_name == 'schedule' || !inputs.dry_run }}
+          CONSUMED_RUN: ${{ inputs.consumed_run }}
+        run: |
+          set -euo pipefail
+          args=(clean)
+          if [[ "$APPLY" == true ]]; then args+=(--apply); fi
+          if [[ -n "$CONSUMED_RUN" ]]; then
+            [[ "$CONSUMED_RUN" =~ ^[1-9][0-9]*$ ]] || exit 1
+            args+=(--consumed-run "$CONSUMED_RUN")
+          fi
+          python3 .github/scripts/cleanup_artifacts.py "${args[@]}"
