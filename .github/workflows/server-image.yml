@@ -13,6 +13,7 @@ on:
   pull_request:
   push:
     paths-ignore:
+      - 'scripts/dev-passkey-smoke/test_workflow.py'
       - '.github/scripts/cleanup_artifacts.py'
       - '.github/scripts/test_cleanup_artifacts.py'
       - '.github/cleanup-policy.json'
