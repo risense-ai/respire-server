@@ -39,9 +39,32 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 1
           name: dev-passkey-smoke-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/dev-passkey-result/progress.json
             ${{ runner.temp }}/dev-passkey-result/result.json
           if-no-files-found: warn
-          retention-days: 7
+
+  cleanup-receipt:
+    needs: [smoke]
+    if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Record the completed producer and delivery inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/cleanup_artifacts.py stamp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-ready-v1
+          path: ${{ runner.temp }}/cleanup-ready.json
+          retention-days: 1
+          if-no-files-found: ignore

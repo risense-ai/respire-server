@@ -47,7 +47,7 @@ class WorkflowSafetyTests(unittest.TestCase):
         self.assertEqual(upload['with']['path'].splitlines(), [
             '${{ runner.temp }}/dev-passkey-result/progress.json',
             '${{ runner.temp }}/dev-passkey-result/result.json'])
-        self.assertEqual(upload['with']['retention-days'], 7)
+        self.assertEqual(upload['with']['retention-days'], 1)
 
     def test_existing_ci_only_runs_offline_safety_tests(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())

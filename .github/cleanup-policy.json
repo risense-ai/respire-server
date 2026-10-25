@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "repository": "risense-ai/respire-server",
+  "workflows": {
+    ".github/workflows/api-deployment-artifact.yml": {
+      "mode": "external-delivery",
+      "artifacts": [
+        "api-deployment-[0-9a-f]{40}"
+      ],
+      "consumer_workflows": []
+    },
+    ".github/workflows/dev-passkey-smoke.yml": {
+      "mode": "completed",
+      "artifacts": [
+        "dev-passkey-smoke-[0-9]+-[0-9]+"
+      ],
+      "consumer_workflows": []
+    }
+  }
+}
