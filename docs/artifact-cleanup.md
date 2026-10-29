@@ -38,7 +38,7 @@ After every external consumer has finished for at least an hour, the operator ma
 manually dispatch cleanup with its exact `consumed_run` and `dry_run: false`.
 This explicit attestation applies to that future opted-in run only. There is no
 implicit "latest" acknowledgment. Smoke evidence has no downstream consumer and
-uses normal completed-run cleanup. Existing deployment input and acknowledgment receipt retention is 7 days.
+uses normal completed-run cleanup. Deployment input and acknowledgment receipt retention is 1 day.
 
 ## Validation
 
