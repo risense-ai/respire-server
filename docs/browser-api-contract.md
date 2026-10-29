@@ -201,6 +201,11 @@ the paired Site change; existing `/pull` and `/v2/*` payloads are unchanged.
 
 - GET `/admin/me`, `/admin/admins`, `/admin/outbox`, `/admin/audit` (page query)
 - GET `/admin/users` (`q`, `page`, `limit`, `status`, optional `export`)
+  - `sort=active|created_at|updated_at` and `order=asc|desc` sort before pagination;
+    defaults remain `created_at` / `asc`. Equal values use username ascending,
+    and accounts without memory updates appear last in either direction.
+  - Each user includes nullable `updated_at`: the latest cloud memory timestamp,
+    including tombstones, normalized to UTC. It is not a server connection time.
 - GET `/admin/users/{user}/sessions`
 - POST `/admin/users`, `/admin/admins`, `/admin/admins/{user}/revoke`
 - POST `/admin/users/{user}/sessions`, `/admin/users/{user}/sessions/{id}/revoke`
