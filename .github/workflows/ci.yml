@@ -31,8 +31,16 @@ jobs:
           "$RUNNER_TEMP/respire-build-tests"
       - name: cargo check
         run: cargo check --workspace --locked
-      - name: OpenAPI contract present
-        run: test -s service/openapi.yaml
+      - name: Validate OpenAPI passkey request schemas
+        run: |
+          python3 -m venv "$RUNNER_TEMP/openapi-tests"
+          "$RUNNER_TEMP/openapi-tests/bin/python" -m pip install --disable-pip-version-check -r scripts/requirements-openapi-tests.txt
+          "$RUNNER_TEMP/openapi-tests/bin/python" -m unittest discover -s scripts/tests -v
+
+      - name: Test DEV smoke safety without contacting DEV
+        run: |
+          "$RUNNER_TEMP/openapi-tests/bin/python" -m pip install --disable-pip-version-check -r scripts/dev-passkey-smoke/requirements.txt
+          "$RUNNER_TEMP/openapi-tests/bin/python" -m unittest discover -s scripts/dev-passkey-smoke -v
 
   test:
     name: unit tests

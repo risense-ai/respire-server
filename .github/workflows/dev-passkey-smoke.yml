@@ -1,0 +1,70 @@
+name: DEV passkey synthetic acceptance
+
+# Explicit operator dispatch only. Never contact DEV from a pull request or push.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One DEV fixture run across all branches, with no cancellation of a live run.
+concurrency:
+  group: respire-dev-passkey-synthetic-acceptance
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Prepare isolated test dependencies
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/dev-passkey-venv"
+          "$RUNNER_TEMP/dev-passkey-venv/bin/python" -m pip install --disable-pip-version-check -r scripts/dev-passkey-smoke/requirements.txt
+      - name: Run the fixed DEV acceptance including real expiry
+        timeout-minutes: 32
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dev-passkey-result"
+          "$RUNNER_TEMP/dev-passkey-venv/bin/python" scripts/dev-passkey-smoke/smoke.py \
+            --approve-synthetic-dev --include-expiry \
+            --journal "$RUNNER_TEMP/dev-passkey-result/progress.json" \
+            --report "$RUNNER_TEMP/dev-passkey-result/result.json"
+      - name: Retain only public progress and redacted result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 1
+          name: dev-passkey-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dev-passkey-result/progress.json
+            ${{ runner.temp }}/dev-passkey-result/result.json
+          if-no-files-found: warn
+
+  cleanup-receipt:
+    needs: [smoke]
+    if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Record the completed producer and delivery inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/cleanup_artifacts.py stamp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-ready-v1
+          path: ${{ runner.temp }}/cleanup-ready.json
+          retention-days: 1
+          if-no-files-found: ignore

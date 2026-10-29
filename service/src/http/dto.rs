@@ -109,6 +109,10 @@ pub(super) struct VaultIn {
     pub urk_nonce: String,
     #[serde(default = "default_vault_version")]
     pub version: i64,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub expected_key_generation: Option<i64>,
 }
 
 fn default_vault_version() -> i64 {

@@ -8,6 +8,14 @@ info:
     schema; Admin JSON routes are not yet fully described. Frontends are owned by
     respire-site. See ../docs/browser-api-contract.md for the cross-origin
     GET/POST + Authorization/Content-Type contract and staged rollout.
+    Passkey request schemas describe the canonical supported browser transport
+    contract, not every compatibility shape tolerated by deserialization. Clients
+    omit wrapper outside commit, omit phase-inapplicable response fields, and use
+    unpadded base64url strings for binary fields. The runtime may tolerate null
+    wrappers, unused known response fields, or legacy binary representations in
+    some deserialization paths. These compatibility forms are outside the canonical
+    contract. WebAuthn cryptographic and account-ownership verification remains
+    independently enforced by the server.
 servers:
   - url: https://api.rsrs.rs
     description: Assigned Respire API endpoint; configuration only, not proof of DNS or deployment.
@@ -458,19 +466,451 @@ paths:
       summary: Read wrapped vault material
       security: [{ bearerAuth: [] }]
       responses:
-        "200": { description: Vault fields }
+        "200": { description: Opaque recovery wrapper plus stable account_id and integer key_generation }
     post:
       summary: Write wrapped vault material
-      description: Stores opaque vault versions 1 through 4 without changing password authentication or deriving client keys. Version 1 preserves legacy password and Account Secret factors; an explicit namespace migration can retain that version. If-None-Match '*' atomically creates only a missing vault; requests without that header preserve existing upsert behavior.
+      description: Stores opaque vault versions 1 through 4 without changing password authentication or deriving client keys. Version 1 preserves legacy password and Account Secret factors; an explicit namespace migration can retain that version. If-None-Match '*' atomically creates only a missing vault; changed legacy upserts atomically invalidate passkeys and advance key_generation. An intentional same-URK rewrap must supply operation=rewrap_same_urk and the current expected_key_generation; this preserves passkeys. The server cannot compare opaque plaintext keys, so upgraded clients must use this operation only after unlocking the existing URK.
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VaultUpdate' }
       parameters:
         - { name: If-None-Match, in: header, schema: { type: string, enum: ['*'] }, description: Create only when no account vault exists }
       responses:
         "200": { description: Stored }
         "400": { description: Invalid vault fields, version, or unsupported condition }
         "412": { description: A vault already exists; its original key material was preserved }
+  /api/self/vault/reset:
+    post:
+      summary: Atomically replace the URK recovery wrapper and revoke passkey wrappers
+      description: Requires the existing vault fields and current expected_key_generation. Advances generation and deletes all registered passkey wrappers and pending ceremonies in the same transaction. Existing encrypted memories are not deleted. Password login is unchanged. Never use for a same-URK password rewrap.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: '#/components/schemas/VaultUpdate' }
+                - type: object
+                  required: [expected_key_generation]
+      responses:
+        "200": { description: Vault replaced and passkeys invalidated }
+        "400": { description: Missing or stale generation, invalid wrapper, or conflicting operation }
+        "403": { description: Read-only session }
+  /api/self/passkeys:
+    get:
+      summary: List this account's active passkey unlock credentials and feature configuration
+      description: Requires a login bearer session; this feature does not provide passwordless account login. Disabled by default until the exact HTTPS Dashboard origin and matching RP ID are configured. No encrypted wrapper or private credential state is included in the list.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: enabled, credentials, and when enabled rp_id/origin; existing vaults also have account_id/key_generation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyList' }
+        "401": { description: Login required }
+        "503": { description: Invalid configuration or unavailable database }
+  /api/self/passkeys/register/start:
+    post:
+      summary: Start adding a passkey from an already unlocked browser vault
+      description: A maximum of 20 credentials and 8 pending ceremonies per account. Registration requires user verification. The browser must preserve its unlocked URK. PRF remains the default. Explicit trusted_browser mode is separately disabled unless RSRS_TRUSTED_BROWSER_UNLOCK=1; it uses a persistent nonexportable browser-local AES key instead of PRF and is not hardware-isolated protection. The server cannot verify possession of plaintext URK.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRegistrationStart' }
+      responses:
+        "200":
+          description: WebAuthn creation options and a five-minute one-use ceremony ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyCeremony' }
+        "400": { description: No initialized vault, invalid label, or credential/pending limit }
+        "403": { description: Read-only session }
+        "404": { description: Passkey feature disabled }
+  /api/self/passkeys/register/finish:
+    post:
+      summary: Verify registration and issue the first independent assertion challenge
+      description: Consumes the registration ceremony. Verifies attestation, challenge, exact origin, RP ID, UV and unique credential ownership using webauthn-rs. The credential remains pending. PRF responses include public prf_salt. Trusted-browser responses instead include device_id and mode, bound to server-stored ceremony state; they do not request or require PRF.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRegistrationFinish' }
+      responses:
+        "200":
+          description: Fresh assertion ceremony with credential_id and mode-specific public metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyCeremony' }
+        "400": { description: Verification failed, expired/replayed ceremony, or duplicate credential }
+  /api/self/passkeys/register/test:
+    post:
+      summary: Verify first assertion and issue an independent wrapper round-trip challenge
+      description: Consumes the first assertion ceremony. The browser derives a wrapping key from its first PRF result, encrypts the existing URK, then obtains this independent second PRF result and successfully unwraps the candidate wrapper before committing. In trusted_browser mode the browser persists and reads back its nonexportable AES key, locally wraps and unwraps the existing URK before commit, and performs both fresh UV assertions. No PRF output, AES key, or plaintext URK is sent to the server.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyAssertionFinish' }
+      responses:
+        "200":
+          description: New assertion challenge with unchanged credential, mode/device, account and generation (plus salt for PRF)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyCeremony' }
+        "400": { description: Invalid signature, UV, account, session, origin, RP, generation, expiry, or replay }
+  /api/self/passkeys/register/commit:
+    post:
+      summary: Verify second assertion and activate this credential's opaque URK wrapper
+      description: Requires the second independent assertion and a browser-tested AES-256-GCM wrapper. Stores metadata, verified public key/counter and opaque wrapper atomically only if vault generation still matches. Does not modify the recovery wrapper. PRF output, plaintext URK, or derived wrapping keys are never accepted.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRegistrationCommit' }
+      responses:
+        "200": { description: Activated; ok=true }
+        "400": { description: Invalid ceremony/assertion/wrapper, duplicate credential, or changed generation }
+  /api/self/passkeys/unlock/start:
+    post:
+      summary: Issue a fresh verified-unlock assertion for a selected credential
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeySelect' }
+      responses:
+        "200":
+          description: Fresh assertion ceremony and mode-specific public metadata; no wrapper yet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyCeremony' }
+        "400": { description: Credential unavailable or belongs to another account/generation/configuration }
+  /api/self/passkeys/unlock/finish:
+    post:
+      summary: Verify fresh assertion and return only the matching opaque wrapper
+      description: One-use assertion bound to the authenticated account, login session, selected credential, mode, trusted-browser device ID, generation and exact RP/origin. Requires UV, signature validation and monotonic nonzero counters. Browser uses its retained PRF output or the matching local trusted-browser AES key to decrypt locally. A public device ID never substitutes for a signed UV assertion.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyAssertionFinish' }
+      responses:
+        "200":
+          description: Matching wrapper and credential/account/RP/generation/mode metadata, with device_id for trusted-browser or prf_salt for PRF
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyUnlocked' }
+        "400": { description: Assertion invalid, expired, replayed, revoked, wrong session/account, or stale generation }
+  /api/self/passkeys/remove:
+    post:
+      summary: Remove one owned passkey wrapper and revoke pending ceremonies
+      description: Leaves other registered credentials and the recovery wrapper unchanged. Removal does not delete a credential from its authenticator/provider.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRemove' }
+      responses:
+        "200": { description: Removed; ok=true }
+        "400": { description: Credential unavailable or not owned by the authenticated account }
+        "403": { description: Read-only session }
+  /api/self/passkeys/cancel:
+    post:
+      summary: Cancel one pending ceremony owned by this account and login session
+      description: Idempotent pending-state cleanup only. Does not revoke active credentials and does not prove an in-flight commit was prevented. After an uncertain commit, reconcile the exact credential/account/device/generation from the list; never claim cancellation rolled back activation.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ceremony_id]
+              properties:
+                ceremony_id: { type: string, format: uuid }
+      responses:
+        "200": { description: Pending cleanup attempted; ok=true, regardless of whether a matching pending ceremony existed }
+        "400": { description: Malformed ceremony ID or request }
+        "403": { description: Read-only session }
 components:
   schemas:
+    VaultUpdate:
+      type: object
+      required: [kdf_salt, wrapped_urk, urk_nonce, version]
+      properties:
+        kdf_salt: { type: string, minLength: 16 }
+        wrapped_urk: { type: string, minLength: 1 }
+        urk_nonce: { type: string, minLength: 1 }
+        version: { type: integer, minimum: 1, maximum: 4 }
+        operation: { type: string, enum: [rewrap_same_urk] }
+        expected_key_generation: { type: integer, minimum: 1, maximum: 9007199254740991 }
+    TrustedBrowserDeviceId:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      description: Public random UUIDv4 identifying this browser enrollment. Never an authentication factor. The browser-only AES key is never transmitted.
+    PasskeyRemove:
+      type: object
+      additionalProperties: false
+      required: [credential_id]
+      properties:
+        credential_id: { $ref: '#/components/schemas/PasskeyCredentialId' }
+    PasskeyRegistrationStart:
+      type: object
+      additionalProperties: false
+      required: [label]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 80 }
+        mode: { type: string, enum: [prf, trusted_browser], default: prf }
+        device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+      oneOf:
+        - properties:
+            mode: { enum: [prf] }
+          not: { required: [device_id] }
+        - required: [mode, device_id]
+          properties:
+            mode: { enum: [trusted_browser] }
+    PasskeySelect:
+      type: object
+      additionalProperties: false
+      required: [credential_id]
+      properties:
+        credential_id: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        mode: { type: string, enum: [prf, trusted_browser], default: prf }
+        device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+      oneOf:
+        - properties:
+            mode: { enum: [prf] }
+          not: { required: [device_id] }
+        - required: [mode, device_id]
+          properties:
+            mode: { enum: [trusted_browser] }
+    PasskeyRegistrationFinish:
+      type: object
+      additionalProperties: false
+      required: [ceremony_id, credential]
+      properties:
+        ceremony_id: { type: string, format: uuid }
+        credential: { $ref: '#/components/schemas/PasskeyRegistrationCredential' }
+        mode: { type: string, enum: [prf, trusted_browser], default: prf }
+        device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+      oneOf:
+        - properties:
+            mode: { enum: [prf] }
+          not: { required: [device_id] }
+        - required: [mode, device_id]
+          properties:
+            mode: { enum: [trusted_browser] }
+    PasskeyAssertionFinish:
+      type: object
+      additionalProperties: false
+      required: [ceremony_id, credential]
+      properties:
+        ceremony_id: { type: string, format: uuid }
+        credential: { $ref: '#/components/schemas/PasskeyAssertionCredential' }
+        mode: { type: string, enum: [prf, trusted_browser], default: prf }
+        device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+      oneOf:
+        - properties:
+            mode: { enum: [prf] }
+          not: { required: [device_id] }
+        - required: [mode, device_id]
+          properties:
+            mode: { enum: [trusted_browser] }
+    PasskeyRegistrationCommit:
+      type: object
+      additionalProperties: false
+      required: [ceremony_id, credential, wrapper]
+      properties:
+        ceremony_id: { type: string, format: uuid }
+        credential: { $ref: '#/components/schemas/PasskeyAssertionCredential' }
+        wrapper:
+          oneOf:
+            - { $ref: '#/components/schemas/PasskeyWrapper' }
+            - { $ref: '#/components/schemas/TrustedBrowserWrapper' }
+        mode: { type: string, enum: [prf, trusted_browser], default: prf }
+        device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+      oneOf:
+        - properties:
+            mode: { enum: [prf] }
+            wrapper: { $ref: '#/components/schemas/PasskeyWrapper' }
+          not: { required: [device_id] }
+        - required: [mode, device_id]
+          properties:
+            mode: { enum: [trusted_browser] }
+            wrapper: { $ref: '#/components/schemas/TrustedBrowserWrapper' }
+    PasskeyCredentialId:
+      type: string
+      minLength: 2
+      maxLength: 1366
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Canonical unpadded base64url encoding of 1 to 1024 credential-ID bytes. Server additionally checks canonical decoding and exact id/rawId equality.
+    PasskeyBinaryResponse:
+      type: string
+      minLength: 2
+      maxLength: 131072
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: Unpadded base64url transport encoding. The complete serialized request is capped at 128 KiB; this per-field bound does not replace the aggregate server limit or WebAuthn verification.
+    PasskeyPrfCapability:
+      type: object
+      additionalProperties: false
+      description: Unsigned public capability hint only. PRF results, evaluation outputs and derived keys must remain in the browser and are never accepted here.
+      properties:
+        enabled: { type: boolean }
+    PasskeyCredentialProperties:
+      type: object
+      additionalProperties: false
+      description: Registration-only unsigned browser hint. It is not proof of user verification or authenticator security.
+      properties:
+        rk: { type: boolean }
+    PasskeyRegistrationExtensions:
+      type: object
+      additionalProperties: false
+      description: Creation options advertise only prf and credProps. Strip all other client extension outputs, including PRF results.
+      properties:
+        prf: { $ref: '#/components/schemas/PasskeyPrfCapability' }
+        credProps: { $ref: '#/components/schemas/PasskeyCredentialProperties' }
+    PasskeyAssertionExtensions:
+      type: object
+      additionalProperties: false
+      description: Assertions accept only the unsigned PRF capability hint. credProps is registration-only; PRF results must never be serialized into this object.
+      properties:
+        prf: { $ref: '#/components/schemas/PasskeyPrfCapability' }
+    PasskeyRegistrationResponse:
+      type: object
+      additionalProperties: false
+      required: [clientDataJSON, attestationObject]
+      properties:
+        clientDataJSON: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        attestationObject: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        transports:
+          type: array
+          nullable: true
+          maxItems: 65536
+          description: Optional public transport hints. Unknown transport strings are ignored by the verifier. The complete request-size limit also applies.
+          items: { type: string, maxLength: 131072 }
+    PasskeyAssertionResponse:
+      type: object
+      additionalProperties: false
+      required: [clientDataJSON, authenticatorData, signature]
+      properties:
+        clientDataJSON: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        authenticatorData: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        signature: { $ref: '#/components/schemas/PasskeyBinaryResponse' }
+        userHandle:
+          type: string
+          nullable: true
+          minLength: 22
+          maxLength: 22
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: If present and non-null, canonical unpadded base64url of the 16-byte account UUID. The server verifies exact ownership, not just this transport shape.
+    PasskeyRegistrationCredential:
+      type: object
+      additionalProperties: false
+      required: [id, rawId, type, response]
+      description: Manually serialized registration response. Schema validation covers transport shape only; the server independently verifies the attestation, challenge, exact RP/origin, UV and credential ownership. Do not forward credential.toJSON() without filtering client extensions.
+      properties:
+        id: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        rawId: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        type: { type: string, enum: [public-key] }
+        response: { $ref: '#/components/schemas/PasskeyRegistrationResponse' }
+        clientExtensionResults: { $ref: '#/components/schemas/PasskeyRegistrationExtensions' }
+    PasskeyAssertionCredential:
+      type: object
+      additionalProperties: false
+      required: [id, rawId, type, response]
+      description: Manually serialized assertion response. Schema validation does not verify the signature, freshness, UV, RP/origin or account binding; the server enforces those independently. PRF output remains exclusively in the browser.
+      properties:
+        id: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        rawId: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        type: { type: string, enum: [public-key] }
+        response: { $ref: '#/components/schemas/PasskeyAssertionResponse' }
+        clientExtensionResults: { $ref: '#/components/schemas/PasskeyAssertionExtensions' }
+    PasskeyWrapper:
+      type: object
+      additionalProperties: false
+      required: [version, kdf, wrapped_urk, nonce]
+      properties:
+        version: { type: integer, enum: [1] }
+        kdf: { type: string, enum: [webauthn-prf-hkdf-sha256-v1] }
+        wrapped_urk: { type: string, minLength: 64, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$', description: Canonical unpadded base64url of 48 bytes (32-byte URK plus GCM tag) }
+        nonce: { type: string, minLength: 16, maxLength: 16, pattern: '^[A-Za-z0-9_-]+$', description: Canonical unpadded base64url of 12 fresh random bytes }
+    TrustedBrowserWrapper:
+      type: object
+      additionalProperties: false
+      required: [version, kdf, wrapped_urk, nonce]
+      description: AES-256-GCM under a browser-only nonexportable random key persisted in IndexedDB. No PRF/HKDF. AAD is UTF-8 JSON.stringify(["respire:trusted-browser:urk-wrap:v1",account_id,rp_id,credential_id,key_generation,device_id]). This is local-browser trust, not authenticator-derived encryption.
+      properties:
+        version: { type: integer, enum: [1] }
+        kdf: { type: string, enum: [trusted-browser-aes256gcm-v1] }
+        wrapped_urk: { type: string, minLength: 64, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$', description: Canonical unpadded base64url of 48 bytes (32-byte URK plus GCM tag) }
+        nonce: { type: string, minLength: 16, maxLength: 16, pattern: '^[A-Za-z0-9_-]+$', description: Canonical unpadded base64url of 12 fresh random bytes }
+    PasskeyCeremony:
+      type: object
+      required: [ceremony_id, public_key, account_id, rp_id, key_generation, mode, trusted_browser_enabled]
+      properties:
+        mode: { type: string, enum: [prf, trusted_browser] }
+        device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+        trusted_browser_enabled: { type: boolean }
+        ceremony_id: { type: string, format: uuid }
+        public_key: { type: object, description: Standard WebAuthn publicKey options; binary fields use base64url in transport }
+        account_id: { type: string, format: uuid }
+        rp_id: { type: string }
+        key_generation: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        credential_id: { type: string }
+        prf_salt: { type: string, description: Canonical unpadded base64url public 32-byte PRF evaluation input }
+    PasskeyUnlocked:
+      type: object
+      required: [wrapper, credential_id, account_id, rp_id, key_generation, mode]
+      properties:
+        mode: { type: string, enum: [prf, trusted_browser] }
+        device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+        wrapper:
+          oneOf:
+            - { $ref: '#/components/schemas/PasskeyWrapper' }
+            - { $ref: '#/components/schemas/TrustedBrowserWrapper' }
+        credential_id: { type: string }
+        account_id: { type: string, format: uuid }
+        rp_id: { type: string }
+        key_generation: { type: integer }
+        prf_salt: { type: string }
+    PasskeyList:
+      type: object
+      required: [enabled, trusted_browser_enabled, credentials]
+      properties:
+        enabled: { type: boolean }
+        trusted_browser_enabled: { type: boolean }
+        rp_id: { type: string }
+        origin: { type: string, format: uri }
+        account_id: { type: string, format: uuid }
+        key_generation: { type: integer }
+        credentials:
+          type: array
+          items:
+            type: object
+            required: [credential_id, label, created_at, mode, key_generation]
+            properties:
+              mode: { type: string, enum: [prf, trusted_browser] }
+              device_id: { $ref: '#/components/schemas/TrustedBrowserDeviceId' }
+              credential_id: { type: string }
+              label: { type: string }
+              created_at: { type: string, format: date-time }
+              last_used_at: { type: string, format: date-time, nullable: true }
+              prf_salt: { type: string }
+              key_generation: { type: integer }
     GithubStart:
       type: object
       required: [state, authorization_uri, expires_in]

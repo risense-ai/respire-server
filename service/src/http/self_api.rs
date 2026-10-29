@@ -14,6 +14,9 @@ pub(super) fn route(
     token: &str,
     create_vault_only: bool,
 ) -> Option<(u16, String)> {
+    if let Some(reply) = super::passkeys::route(repo, method, path, body, user, token) {
+        return Some(reply);
+    }
     if let Some(reply) = super::github::route(repo, method, path, body, Some(user)) {
         return Some(reply);
     }
@@ -117,17 +120,21 @@ pub(super) fn route(
             Err(e) => server_error(e),
         });
     }
-    if method == "POST" && path == "/api/self/vault" {
+    if method == "POST" && (path == "/api/self/vault" || path == "/api/self/vault/reset") {
         let Ok(parsed) = serde_json::from_str::<VaultIn>(body) else {
             return Some(json(400, serde_json::json!({"error": "bad json"})));
         };
-        let result = if create_vault_only {
-            repo.create_vault(user, parsed.kdf_salt.trim(), parsed.wrapped_urk.trim(),
-                parsed.urk_nonce.trim(), parsed.version)
-        } else {
-            repo.put_vault(user, parsed.kdf_salt.trim(), parsed.wrapped_urk.trim(),
-                parsed.urk_nonce.trim(), parsed.version).map(|()| true)
-        };
+        if parsed.operation.as_deref().is_some_and(|op| op != "rewrap_same_urk") {
+            return Some(json(400, serde_json::json!({"error":"unsupported vault operation"})));
+        }
+        let reset = path.ends_with("/reset");
+        if reset && (create_vault_only || parsed.operation.is_some()) {
+            return Some(json(400, serde_json::json!({"error":"conflicting vault operation"})));
+        }
+        let result = repo.write_vault_operation(user, parsed.kdf_salt.trim(),
+            parsed.wrapped_urk.trim(), parsed.urk_nonce.trim(), parsed.version,
+            create_vault_only, parsed.operation.as_deref() == Some("rewrap_same_urk"),
+            parsed.expected_key_generation, reset);
         return Some(match result {
             Ok(false) => json(412, serde_json::json!({"error":"vault already exists; original key material preserved"})),
             Ok(true) => {

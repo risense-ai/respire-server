@@ -55,3 +55,26 @@ jobs:
           name: api-deployment-${{ github.sha }}
           path: artifact/
           retention-days: 1
+
+  cleanup-receipt:
+    needs: [build]
+    if: ${{ always() && !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Record the completed producer and delivery inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/cleanup_artifacts.py stamp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-ready-v1
+          path: ${{ runner.temp }}/cleanup-ready.json
+          retention-days: 1
+          if-no-files-found: ignore

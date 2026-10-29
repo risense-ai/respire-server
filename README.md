@@ -43,6 +43,21 @@ records and model bytes to Core through the app SDK. Core performs inference and
 private memory policies in memory; it does not open files, databases or directories.
 Opaque derived index bytes are interpreted by Core and persisted by the host.
 
+## Optional Passkey memory unlock
+
+The Dashboard can add PRF-capable Passkeys as an extra way to decrypt the same
+existing vault, while retaining the superpassword recovery code. The API verifies
+WebAuthn; encryption keys and PRF output remain in the browser. This is separate
+from account sign-in and is disabled until an exact Dashboard RP/origin is
+configured. See [DEV rollout, compatibility and recovery](docs/passkey-dev-rollout.md)
+for schema 9, legacy-client reset behavior and rollback constraints.
+
+A separately default-off trusted-browser option supports authenticators without
+PRF. It keeps a nonexportable AES key in that browser and releases only an opaque
+wrapper after fresh WebAuthn user verification. This is browser-local trust, not
+hardware-isolated or PRF-derived encryption. Both operator enablement
+(`RSRS_TRUSTED_BROWSER_UNLOCK=1`) and explicit user enrollment are required.
+
 ## Endpoint ownership and staged deployment
 
 Admin daily operations statistics use schema 7 and owner/admin-only

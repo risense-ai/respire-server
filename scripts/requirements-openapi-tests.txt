@@ -1,0 +1,3 @@
+# Test-only schema validation; not installed in the service image.
+PyYAML==6.0.3
+jsonschema==4.26.0
