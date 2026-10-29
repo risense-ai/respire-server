@@ -62,6 +62,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0008_trusted_browser_unlock.sql",
         sql: include_str!("migrations/0008_trusted_browser_unlock.sql"),
     },
+    Migration {
+        version: 10,
+        name: "0009_sync_retention.sql",
+        sql: include_str!("migrations/0009_sync_retention.sql"),
+    },
 ];
 
 pub(crate) fn apply(client: &mut Client) -> Result<()> {

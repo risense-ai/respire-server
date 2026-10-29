@@ -182,11 +182,20 @@ and rejected operations are omitted. Pages contain at most 100 records and
 target 256 KiB of serialized blobs; one oversized record is returned alone.
 
 While `has_more` is true, send `cursor` as `after`, retaining the first page's
-`until` and snapshot mode. Immutable applied versions provide the latest value
-per ID at that fixed boundary, even during concurrent updates and deletions.
+`until` and snapshot mode. Retained applied versions provide the latest value
+per ID at that fixed boundary. Schema 10 erases deleted payloads immediately and
+keeps at most 1,000 non-head versions per account. If deletion or compaction
+invalidates the boundary, the server returns `409` with `code: snapshot_required`
+instead of completing an incomplete snapshot.
 After completion use `snapshot=0` and `after=<cursor>` without `until` to start
 an incremental round. Follow the same paging rules; tombstones remove cached
 records. Never mix these account revision cursors with legacy `/pull` cursors.
+
+Deletion is permanent for an object ID. Tombstones have empty ciphertext and
+nonce; the server also erases encrypted vectors and historical versions. A later
+upload cannot restore that ID, including through the legacy timestamp protocol.
+Restore content under a new ID. Empty deletion heads remain for synchronization
+and rejection of old clients; retries do not create additional deletion history.
 
 Malformed numeric/mode parameters return `400`. A changed epoch or invalid
 persisted cursor returns `409` with `code: snapshot_required`; discard that

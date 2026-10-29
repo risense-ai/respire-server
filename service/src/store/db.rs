@@ -1532,6 +1532,37 @@ mod tests {
         assert_eq!(total, 1);
         assert_eq!(alive, 0);
         assert!(all[0].deleted);
+        assert!(all[0].ciphertext.is_empty());
+        assert!(all[0].nonce.is_empty());
+        assert!(all[0].embedding_enc.is_empty());
+        let epoch = repo.sync_capabilities("erin")?.epoch;
+        let page = repo.sync_page("erin", &epoch, 0, None, false)?;
+        assert_eq!(page.changes.len(), 1);
+        let deletion_rev = page.changes[0].rev;
+        let mut resurrection = all[0].clone();
+        resurrection.deleted = false;
+        resurrection.ciphertext = "resurrection".into();
+        resurrection.nonce = "nonce".into();
+        resurrection.updated_at = "2099-01-01T00:00:00.000Z".into();
+        let operation = respire::transport::protocol::Operation {
+            op_id: "resurrection".into(),
+            base_rev: Some(deletion_rev),
+            parent_op_id: None,
+            blob: resurrection,
+        };
+        for _ in 0..3 {
+            let rejected = repo.sync_write("erin", Some(&epoch), std::slice::from_ref(&operation))?;
+            assert_eq!(rejected.results[0].status, "legacy_rejected");
+            assert_eq!(rejected.results[0].head_rev, deletion_rev);
+            assert!(!repo.put("erin", &BlobWrite {
+                updated_at: "2099-01-01T00:00:00.000Z", ..b
+            })?);
+        }
+        let after = repo.sync_page("erin", &epoch, 0, None, false)?;
+        assert_eq!(after.until, page.until);
+        assert_eq!(after.changes.len(), 1);
+        assert!(after.changes[0].blob.ciphertext.is_empty());
+        assert!(repo.sync_page("erin", &epoch, 0, Some(deletion_rev - 1), true).is_err());
         Ok(())
     }
 
