@@ -161,7 +161,7 @@ jobs:
           ! grep -qi '^access-control-allow-origin:' /tmp/cors-headers
           python3 service/sync_probe.py --url "$BASE" --user sync-ci-probe
           schema_version="$("${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT v FROM schema_meta WHERE k='version'")"
-          test "$schema_version" = 9 || { echo "::error::expected cloud schema 9 after trusted-browser unlock migration, got $schema_version"; exit 1; }
+          test "$schema_version" = 10 || { echo "::error::expected cloud schema 10 after sync retention migration, got $schema_version"; exit 1; }
           github_tables="$("${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('github_identities','github_authorizations')")"
           test "$github_tables" = 2 || { echo "::error::GitHub migration tables missing"; exit 1; }
           stats_table="$("${COMPOSE[@]}" exec -T db psql -U respire -d respire -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='ops_daily_stats'")"

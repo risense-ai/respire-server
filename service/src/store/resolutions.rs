@@ -188,7 +188,7 @@ mod tests {
         let other = BlobRepo::connect(&repo.url)?;
         let repeated = other.resolve_conflicts("u", &req)?;
         assert_eq!(
-            serde_json::to_value(first)?,
+            serde_json::to_value(&first)?,
             serde_json::to_value(repeated)?
         );
         assert_eq!(repo.pull("u", None)?.1, before);
@@ -203,6 +203,22 @@ mod tests {
             .resolution_page("u", &epoch, 1, None)?
             .resolutions
             .is_empty());
+        repo.forget("u", "entry")?;
+        assert!(repo.lock().query_opt(
+            "SELECT rev FROM sync_versions WHERE \"user\"=$1 AND rev=$2",
+            &[&"u", &rev],
+        )?.is_none());
+        assert_eq!(
+            serde_json::to_value(repo.resolve_conflicts("u", &req)?)?,
+            serde_json::to_value(first)?,
+        );
+        assert_eq!(
+            serde_json::to_value(other.resolution_page("u", &epoch, 0, None)?)?,
+            serde_json::to_value(feed)?,
+        );
+        let mut expired = req;
+        expired.items[0].conflict_rev = rev + 100;
+        assert_eq!(repo.resolve_conflicts("u", &expired)?.results[0].outcome, "stale");
         Ok(())
     }
 
@@ -333,19 +349,6 @@ impl BlobRepo {
             ) {
                 bail!("invalid resolution action");
             }
-            let candidate = tx
-                .query_opt(
-                    "SELECT id,status FROM sync_versions WHERE \"user\"=$1 AND rev=$2",
-                    &[&user, &decision.conflict_rev],
-                )?
-                .ok_or_else(|| anyhow::anyhow!("retained version not found"))?;
-            if !matches!(
-                candidate.get::<_, String>("status").as_str(),
-                "conflict_saved" | "legacy_rejected"
-            ) {
-                bail!("version is not a conflict or rejected write");
-            }
-            let id: String = candidate.get("id");
             if let Some(row) = tx.query_opt(
                 "SELECT * FROM sync_resolutions WHERE \"user\"=$1 AND conflict_rev=$2",
                 &[&user, &decision.conflict_rev],
@@ -357,6 +360,24 @@ impl BlobRepo {
                 });
                 continue;
             }
+            let Some(candidate) = tx.query_opt(
+                "SELECT id,status FROM sync_versions WHERE \"user\"=$1 AND rev=$2",
+                &[&user, &decision.conflict_rev],
+            )? else {
+                results.push(ResolutionResult {
+                    conflict_rev: decision.conflict_rev,
+                    outcome: "stale".into(),
+                    resolution: None,
+                });
+                continue;
+            };
+            if !matches!(
+                candidate.get::<_, String>("status").as_str(),
+                "conflict_saved" | "legacy_rejected"
+            ) {
+                bail!("version is not a conflict or rejected write");
+            }
+            let id: String = candidate.get("id");
             let head: i64 = tx
                 .query_opt(
                     "SELECT rev FROM sync_heads WHERE \"user\"=$1 AND id=$2",

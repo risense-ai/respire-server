@@ -2,6 +2,8 @@
 -- old clients; neither retries nor rejected resurrection attempts add history.
 ALTER TABLE sync_accounts ADD COLUMN IF NOT EXISTS history_floor BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS sync_heads_revision ON sync_heads("user", rev);
+-- Decisions contain no payload and must survive removal of their ciphertext.
+ALTER TABLE sync_resolutions DROP CONSTRAINT IF EXISTS sync_resolutions_user_conflict_rev_fkey;
 
 CREATE OR REPLACE FUNCTION compact_sync_history(account TEXT) RETURNS void
 LANGUAGE plpgsql AS $$

@@ -28,6 +28,9 @@ remembering each deleted ID is necessary to reject arbitrarily old clients.
 Those small receipts grow with distinct deleted IDs, not with retries or edits.
 `total` still includes deletion heads for protocol compatibility; `alive` counts
 live memories. This change does not prune database backups or client-local copies.
+Payload-free conflict decisions remain in their independent stream after the
+corresponding versions are removed. Repeating a processed decision returns its
+original receipt; a decision for a pruned unresolved version returns `stale`.
 
 Compaction runs during upgrade and each write transaction. Pruned operation IDs
 are no longer an idempotency guarantee; stale retries still undergo revision and
