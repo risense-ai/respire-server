@@ -199,6 +199,19 @@ mod tests {
         assert_eq!(second.changes.len(), 50);
         let incremental = repo.sync_page("u", &epoch, second.cursor, None, false)?;
         assert_eq!(incremental.changes.len(), 1);
+        let history: Vec<_> = (0..1005)
+            .map(|i| operation("history", &format!("history-{i}"), None, "2026-09-19T00:00:00.003Z"))
+            .collect();
+        for chunk in history.chunks(PUSH_ITEMS) {
+            repo.sync_write("u", Some(&epoch), chunk)?;
+        }
+        let retained: i64 = repo.lock().query_one(
+            "SELECT count(*) FROM sync_versions v WHERE v.\"user\"=$1 AND NOT EXISTS (SELECT 1 FROM sync_heads h WHERE h.\"user\"=v.\"user\" AND h.rev=v.rev)",
+            &[&"u"],
+        )?.get(0);
+        assert_eq!(retained, 1000);
+        assert!(repo.sync_page("u", &epoch, first.cursor, Some(first.until), true).is_err());
+        assert_eq!(repo.count("u")?, 252);
         Ok(())
     }
 }
@@ -301,6 +314,21 @@ impl BlobRepo {
         for op in ops {
             let mut b = op.blob.clone();
             b.user = user.to_owned();
+            let head = heads.get(&b.id);
+            if let Some((head_rev, _)) = head.filter(|(_, old)| old.deleted) {
+                results.push(Receipt {
+                    op_id: op.op_id.clone(),
+                    status: if b.deleted {
+                        "applied"
+                    } else {
+                        "legacy_rejected"
+                    }
+                    .into(),
+                    stored_rev: *head_rev,
+                    head_rev: *head_rev,
+                });
+                continue;
+            }
             let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(op)?));
             if epoch.is_some() {
                 if let Some((previous, result, _)) = known.get(&op.op_id) {
@@ -350,10 +378,15 @@ impl BlobRepo {
             rev = rev
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("sync revision exhausted"))?;
+            if b.deleted {
+                b.ciphertext.clear();
+                b.nonce.clear();
+                b.embedding_enc.clear();
+            }
             if accepted {
                 // Preserve old vector ciphertext only for unchanged content. New clients
                 // never depend on a legacy embedding for a newly edited payload.
-                if b.embedding_enc.is_empty() {
+                if !b.deleted && b.embedding_enc.is_empty() {
                     if let Some((_, old)) = head {
                         b.embedding_enc.clone_from(&old.embedding_enc);
                     }
@@ -411,6 +444,9 @@ impl BlobRepo {
                 SELECT $1,id,max(rev) FROM jsonb_to_recordset($2::text::jsonb) AS v(id text,rev bigint) GROUP BY id
                 ON CONFLICT (\"user\",id) DO UPDATE SET rev=excluded.rev", &[&user,&data])?;
         }
+        if !versions.is_empty() {
+            tx.execute("SELECT compact_sync_history($1)", &[&user])?;
+        }
         tx.commit()?;
         Ok(PushReply { results })
     }
@@ -444,7 +480,7 @@ impl BlobRepo {
             .read_only(true)
             .start()?;
         let state = tx.query_one(
-            "SELECT epoch,rev FROM sync_accounts WHERE \"user\"=$1",
+            "SELECT epoch,rev,history_floor FROM sync_accounts WHERE \"user\"=$1",
             &[&user],
         )?;
         let actual: String = state.get(0);
@@ -453,6 +489,9 @@ impl BlobRepo {
             bail!("sync epoch changed; snapshot required");
         }
         let high = until.unwrap_or(current);
+        if high < state.get::<_, i64>("history_floor") {
+            bail!("sync history compacted; restart snapshot");
+        }
         if after < 0 || high < after || high > current {
             bail!("invalid sync cursor");
         }

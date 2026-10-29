@@ -12,6 +12,37 @@ flowchart LR
     App --> SDK[Binary Core SDK]
 ```
 
+## Deletion and bounded sync history
+
+Schema 10 makes deletion final for an object ID. Accepted deletes erase the
+current ciphertext, nonce and encrypted vector, and remove every earlier version
+and conflict for that ID in the same transaction. Existing deletions are scrubbed
+during migration. The server retains an empty deletion head to reject uploads
+from offline clients, even when they supply newer timestamps or the current base
+revision. Restoring content requires a new object ID. Repeated deletes and
+rejected resurrection attempts do not allocate revisions or retain payloads.
+
+Each account retains at most 1,000 non-head history rows, including conflicts and
+operation receipts. Current live heads and empty deletion heads are excluded:
+remembering each deleted ID is necessary to reject arbitrarily old clients.
+Those small receipts grow with distinct deleted IDs, not with retries or edits.
+`total` still includes deletion heads for protocol compatibility; `alive` counts
+live memories. This change does not prune database backups or client-local copies.
+
+Compaction runs during upgrade and each write transaction. Pruned operation IDs
+are no longer an idempotency guarantee; stale retries still undergo revision and
+deletion checks. A frozen page whose `until` predates compaction returns HTTP 409
+(`sync history compacted; restart snapshot`). Updated CLI clients retry that
+page round once without the expired watermark, resetting an unfinished snapshot;
+the browser already handles `snapshot_required`. Older clients with a persisted
+unfinished snapshot need an upgrade before they can resume. The epoch and cursors
+never rewind, and ordinary incremental pulls continue from retained heads.
+
+Migration is irreversible: historical ciphertext and unresolved conflicts outside
+the budget cannot be recovered through synchronization. Roll back only with a
+reviewed database restore and matching server version; restoring an old backup
+can also restore deleted content and missing deletion evidence.
+
 ## Repository layout
 
 | Directory | Responsibility |

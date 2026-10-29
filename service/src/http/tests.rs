@@ -37,7 +37,7 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
     assert!(blobs.iter().all(|b| b.as_object().is_some_and(|o|
         o.len() == 5 && !o.contains_key("embedding_enc") && !o.contains_key("user"))));
 
-    // Mutations between pages must not alter the immutable snapshot upper bound.
+    // Deletion erases history and expires an older frozen snapshot.
     let edit = serde_json::json!({"id":"page-101", "ciphertext":"edited", "nonce":"nonce",
         "updated_at":"2026-10-06T00:00:00Z", "deleted":false}).to_string();
     assert_eq!(handle(&repo, "POST", "/push", &edit, Some(&token)).0, 200);
@@ -45,10 +45,17 @@ fn browser_pages_preserve_snapshot_and_incremental_account_boundaries() -> Resul
     let stale = serde_json::json!({"id":"page-101", "ciphertext":"stale", "nonce":"nonce",
         "updated_at":"2026-10-04T00:00:00Z", "deleted":false}).to_string();
     assert_eq!(handle(&repo, "POST", "/push", &stale, Some(&token)).0, 200);
-    let last = read(&query(100, Some(102), true))?;
+    let (status, expired) = handle(&repo, "GET", &query(100, Some(102), true), "", Some(&token));
+    assert_eq!(status, 409);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&expired)?["code"], "snapshot_required");
+    let restarted = read(&query(0, None, true))?;
+    let last = read(&query(restarted["cursor"].as_i64().context("cursor")?, Some(105), true))?;
     assert_eq!(last["blobs"].as_array().context("last blobs")?.len(), 2);
-    assert_eq!(last["blobs"][1]["ciphertext"], "cipher-101");
-    assert_eq!(last["cursor"], 102);
+    assert_eq!(last["blobs"][0]["ciphertext"], "edited");
+    assert_eq!(last["blobs"][1]["id"], "page-0");
+    assert_eq!(last["blobs"][1]["ciphertext"], "");
+    assert_eq!(last["blobs"][1]["nonce"], "");
+    assert_eq!(last["cursor"], 105);
     assert_eq!(last["has_more"], false);
     let delta = read(&query(102, None, false))?;
     let changes = delta["blobs"].as_array().context("delta blobs")?;
