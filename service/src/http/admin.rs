@@ -70,7 +70,14 @@ pub(super) fn route(
                     Err(e) => server_error(e),
                 };
             }
-            match repo.list_users_filtered(&q, page, limit, status) {
+            let sort = query_param(query, "sort").unwrap_or("created_at");
+            let order = query_param(query, "order").unwrap_or("asc");
+            if !matches!(sort, "active" | "created_at" | "updated_at")
+                || !matches!(order, "asc" | "desc")
+            {
+                return json(400, serde_json::json!({"error": "invalid user sort or order"}));
+            }
+            match repo.list_users_filtered(&q, page, limit, status, sort, order) {
                 Ok((users, total)) => match repo.users_summary() {
                     Ok(summary) => json(200, serde_json::json!({"users": users, "total": total, "page": page, "limit": limit, "summary": summary})),
                     Err(e) => server_error(e),
