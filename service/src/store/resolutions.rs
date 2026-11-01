@@ -291,7 +291,7 @@ mod tests {
         let (repo, epoch, _) = setup()?;
         let cursor = repo.pull("u", None)?.1;
         // Reconstruct the actual version-2 schema, including the pre-worker email table.
-        repo.lock().batch_execute("DROP TABLE sync_resolutions,
+        repo.lock().batch_execute("DROP TABLE review_confirmations,sync_resolutions,
             github_authorizations,github_identities,cli_authorizations,ops_daily_stats,
             vault_passkey_ceremonies,vault_passkeys;
             ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;

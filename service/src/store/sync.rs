@@ -34,7 +34,7 @@ mod tests {
         repo.register("u", "hash", "salt")?;
         // This database belongs only to this test. Reconstruct the pre-v2 schema.
         repo.lock().batch_execute(
-            "DROP TABLE sync_resolutions,sync_heads,sync_versions,sync_accounts,
+            "DROP TABLE review_confirmations,sync_resolutions,sync_heads,sync_versions,sync_accounts,
                 github_authorizations,github_identities,cli_authorizations,ops_daily_stats,
             vault_passkey_ceremonies,vault_passkeys;
             ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;

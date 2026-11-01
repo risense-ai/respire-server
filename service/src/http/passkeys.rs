@@ -13,6 +13,8 @@ use webauthn_rs::prelude::*;
 
 use crate::store::BlobRepo;
 
+mod review;
+
 const TTL_SECONDS: i64 = 300;
 const MAX_CREDENTIALS: i64 = 20;
 const MAX_PENDING: i64 = 8;
@@ -949,6 +951,9 @@ fn route_config(
     if body.len() > 128 * 1024 {
         return super::json::json(413, json!({"error":"passkey request too large"}));
     }
+    if suffix.starts_with("/review/") {
+        return review::route(repo, config, method, suffix, body, user, token);
+    }
     let result = match (method, suffix) {
         ("GET", "") => list(repo, config, user),
         ("POST", "/register/start") => register_start(repo, config, user, token, body),
@@ -1601,6 +1606,89 @@ mod tests {
         assert_eq!(unlocked["wrapper"], serde_json::to_value(wrapper())?);
         assert_eq!(unlocked["account_id"], activate["account_id"]);
         assert!(assertion_finish(&repo, &config, USER, TOKEN, &input.to_string(), false).is_err());
+        // Review uses a fresh, purpose-isolated assertion and a durable one-use receipt.
+        let binding = json!({"owner":USER,"local_library_id":"local-a",
+            "id":"11111111-2222-4333-8444-555555555555",
+            "record_revision":format!("sha256:{}", "a".repeat(64)),
+            "expected_memory_revision":"b".repeat(32),
+            "claim_digest":format!("sha256:{}", "c".repeat(64)),
+            "intent_digest":format!("sha256:{}", "d".repeat(64))});
+        let call = |method: &str, path: &str, body: Value| -> Result<(u16, Value)> {
+            let (status, body) =
+                route_config(&repo, &config, method, path, &body.to_string(), USER, TOKEN);
+            Ok((status, serde_json::from_str(&body)?))
+        };
+        let start_body = json!({"credential_id":activate["credential_id"],"binding":binding});
+        let mut wrong = start_body.clone();
+        wrong["binding"]["owner"] = json!("another-user");
+        assert_eq!(call("POST", "/review/start", wrong)?.0, 400);
+        let unlock = unlock_start(&repo, &config, USER, TOKEN, &select(&activate))?;
+        let wrong_purpose = json!({"ceremony_id":unlock["ceremony_id"],
+            "credential":make_assertion(&mut auth, &config, &unlock)?});
+        assert_eq!(call("POST", "/review/finish", wrong_purpose)?.0, 400);
+        let (status, started) = call("POST", "/review/start", start_body.clone())?;
+        assert_eq!(status, 200);
+        let completed = json!({"ceremony_id":started["ceremony_id"],
+            "credential":make_assertion(&mut auth, &config, &started)?});
+        let (status, receipt) = call("POST", "/review/finish", completed.clone())?;
+        assert_eq!(status, 200);
+        assert_eq!(receipt["purpose"], "review-confirm");
+        assert_eq!(receipt["binding"], binding);
+        assert_eq!(receipt["submission_available"], true);
+        assert!(receipt.get("wrapper").is_none());
+        assert_eq!(call("POST", "/review/finish", completed)?.0, 400);
+        let event_path = format!(
+            "/review/events/{}",
+            receipt["event_id"].as_str().context("event id")?
+        );
+        let consume = json!({"event_id":receipt["event_id"],"binding":binding});
+        let mut wrong = consume.clone();
+        wrong["binding"]["intent_digest"] = json!(format!("sha256:{}", "e".repeat(64)));
+        assert_eq!(call("POST", "/review/consume", wrong)?.0, 400);
+        assert_eq!(call("POST", "/review/consume", consume.clone())?.0, 200);
+        assert_eq!(call("POST", "/review/consume", consume)?.0, 400);
+        let durable = call("GET", &event_path, json!({}))?.1;
+        assert_eq!(durable["valid"], true);
+        assert_eq!(durable["submission_available"], false);
+        assert_eq!(
+            call(
+                "POST",
+                "/review/revoke",
+                json!({"event_id":receipt["event_id"],"reason":"withdrawn"})
+            )?
+            .0,
+            200
+        );
+        assert_eq!(call("GET", &event_path, json!({}))?.1["valid"], false);
+        let started = call("POST", "/review/start", start_body)?.1;
+        let completed = json!({"ceremony_id":started["ceremony_id"],
+            "credential":make_assertion(&mut auth, &config, &started)?});
+        let receipt = call("POST", "/review/finish", completed)?.1;
+        repo.lock().execute(
+            "UPDATE review_confirmations SET expires_at=0 WHERE event_id=$1",
+            &[&receipt["event_id"].as_str().context("expiring event")?],
+        )?;
+        assert_eq!(
+            call(
+                "POST",
+                "/review/consume",
+                json!({"event_id":receipt["event_id"],"binding":binding})
+            )?
+            .0,
+            400
+        );
+        assert_eq!(
+            call(
+                "GET",
+                &format!(
+                    "/review/events/{}",
+                    receipt["event_id"].as_str().context("event")?
+                ),
+                json!({})
+            )?
+            .1["valid"],
+            true
+        );
         Ok(())
     }
 
@@ -2122,6 +2210,10 @@ mod tests {
             "/register/commit",
             "/unlock/start",
             "/unlock/finish",
+            "/review/start",
+            "/review/finish",
+            "/review/consume",
+            "/review/revoke",
             "/remove",
         ] {
             assert_eq!(

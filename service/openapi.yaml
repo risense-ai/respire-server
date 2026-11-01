@@ -612,6 +612,71 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PasskeyUnlocked' }
         "400": { description: Assertion invalid, expired, replayed, revoked, wrong session/account, or stale generation }
+  /api/self/passkeys/review/start:
+    post:
+      summary: Issue a fresh review-confirm assertion
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewStart' }
+      responses:
+        "200": { description: "Fresh ceremony bound to the exact digest and local intent" }
+        "400": { description: Invalid binding, expired, replayed, revoked or unavailable approval }
+        "403": { description: Read-only session }
+  /api/self/passkeys/review/finish:
+    post:
+      summary: Verify user presence and persist a review event
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewFinish' }
+      responses:
+        "200": { description: "Durable confirmation receipt; never returns a key wrapper" }
+        "400": { description: Invalid binding, expired, replayed, revoked or unavailable approval }
+        "403": { description: Read-only session }
+  /api/self/passkeys/review/consume:
+    post:
+      summary: Consume one unexpired exact submission approval
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewConsume' }
+      responses:
+        "200": { description: "Receipt with consumed_at set; local CAS failures require new approval" }
+        "400": { description: Invalid binding, expired, replayed, revoked or unavailable approval }
+        "403": { description: Read-only session }
+  /api/self/passkeys/review/revoke:
+    post:
+      summary: Revoke an owned persistent confirmation
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewRevoke' }
+      responses:
+        "200": { description: "Revoked true; repeated revocation is idempotent" }
+        "400": { description: Invalid binding, expired, replayed, revoked or unavailable approval }
+        "403": { description: Read-only session }
+  /api/self/passkeys/review/events/{event_id}:
+    get:
+      summary: Revalidate an owned persistent claim event without consumption
+      description: Submission expiry and local library ID do not constrain historical validation. Check valid plus owner, id, record_revision and claim_digest against the current record. Current account, generation, credential and RP/origin must still match; revoked events return valid=false.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: event_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Durable receipt with validity, binding, actor, submission expiry, consumption and revocation timestamps }
+        "400": { description: Invalid or unavailable event }
   /api/self/passkeys/remove:
     post:
       summary: Remove one owned passkey wrapper and revoke pending ceremonies
@@ -647,6 +712,46 @@ paths:
         "403": { description: Read-only session }
 components:
   schemas:
+    ReviewBinding:
+      type: object
+      additionalProperties: false
+      required: [owner, local_library_id, id, record_revision, expected_memory_revision, claim_digest, intent_digest]
+      properties:
+        owner: { type: string, description: Exact authenticated username }
+        local_library_id: { type: string, minLength: 1, maxLength: 256 }
+        id: { type: string, format: uuid, description: Canonical complete lowercase UUID }
+        record_revision: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        expected_memory_revision: { type: string, pattern: '^[0-9a-f]{32}$' }
+        claim_digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        intent_digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+    ReviewStart:
+      type: object
+      additionalProperties: false
+      required: [credential_id, binding]
+      properties:
+        credential_id: { $ref: '#/components/schemas/PasskeyCredentialId' }
+        binding: { $ref: '#/components/schemas/ReviewBinding' }
+    ReviewFinish:
+      type: object
+      additionalProperties: false
+      required: [ceremony_id, credential]
+      properties:
+        ceremony_id: { type: string, format: uuid }
+        credential: { $ref: '#/components/schemas/PasskeyAssertionCredential' }
+    ReviewConsume:
+      type: object
+      additionalProperties: false
+      required: [event_id, binding]
+      properties:
+        event_id: { type: string, format: uuid }
+        binding: { $ref: '#/components/schemas/ReviewBinding' }
+    ReviewRevoke:
+      type: object
+      additionalProperties: false
+      required: [event_id, reason]
+      properties:
+        event_id: { type: string, format: uuid }
+        reason: { type: string, minLength: 1, maxLength: 1024 }
     VaultUpdate:
       type: object
       required: [kdf_salt, wrapped_urk, urk_nonce, version]
