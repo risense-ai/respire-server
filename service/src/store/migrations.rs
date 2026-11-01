@@ -67,6 +67,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0009_sync_retention.sql",
         sql: include_str!("migrations/0009_sync_retention.sql"),
     },
+    Migration {
+        version: 11,
+        name: "0010_review_confirm.sql",
+        sql: include_str!("migrations/0010_review_confirm.sql"),
+    },
 ];
 
 pub(crate) fn apply(client: &mut Client) -> Result<()> {
@@ -204,7 +209,7 @@ mod tests {
             let mut client = repo.lock();
             // Simulate a v1 database: baseline tables without sync/resolution/mail objects.
             client.batch_execute(
-                "DROP TABLE IF EXISTS vault_passkey_ceremonies, vault_passkeys, github_authorizations, github_identities, cli_authorizations, ops_daily_stats,
+                "DROP TABLE IF EXISTS review_confirmations, vault_passkey_ceremonies, vault_passkeys, github_authorizations, github_identities, cli_authorizations, ops_daily_stats,
                      sync_resolutions, sync_heads, sync_versions, sync_accounts,
                      mail_outbox, verify_codes, audit_log, super_admins, vault, sessions, blobs,
                      users, sync_counter, schema_meta CASCADE;
@@ -272,7 +277,7 @@ mod tests {
         let repo = crate::store::connect_unique()?;
         let mut client = repo.lock();
         client.batch_execute(
-            "DROP TABLE vault_passkey_ceremonies, vault_passkeys;
+            "DROP TABLE review_confirmations, vault_passkey_ceremonies, vault_passkeys;
              ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;
              DROP TABLE ops_daily_stats;
              DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
@@ -317,7 +322,7 @@ mod tests {
             let repo = crate::store::connect_unique()?;
             let mut client = repo.lock();
             client.batch_execute(
-                "DROP TABLE vault_passkey_ceremonies, vault_passkeys;
+                "DROP TABLE review_confirmations, vault_passkey_ceremonies, vault_passkeys;
                  ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;
                  DROP TABLE ops_daily_stats, github_authorizations, github_identities;
                  DROP TRIGGER ops_user_insert ON users; DROP TRIGGER ops_blob_insert ON blobs;
@@ -351,7 +356,7 @@ mod tests {
         repo.put_vault("upgrade-vault", "0011223344556677", "opaque-wrap", "nonce", 1)?;
         let mut client = repo.lock();
         client.batch_execute(
-            "DROP TABLE vault_passkey_ceremonies, vault_passkeys;
+            "DROP TABLE review_confirmations, vault_passkey_ceremonies, vault_passkeys;
              ALTER TABLE vault DROP COLUMN account_id, DROP COLUMN key_generation;
              UPDATE schema_meta SET v='7' WHERE k='version';")?;
         apply(&mut client)?;
@@ -384,6 +389,7 @@ mod tests {
         let before = repo.get_vault("upgrade-mode")?;
         let mut client = repo.lock();
         client.batch_execute(r#"
+            DROP TABLE review_confirmations;
             ALTER TABLE vault_passkeys DROP CONSTRAINT vault_passkeys_mode_device;
             ALTER TABLE vault_passkeys DROP COLUMN mode, DROP COLUMN device_id;
             UPDATE schema_meta SET v='8' WHERE k='version';

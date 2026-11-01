@@ -1,5 +1,10 @@
 # Passkey memory unlock: DEV rollout and recovery
 
+The separate [review-confirm bridge](review-confirm-bridge.md) uses fresh
+purpose-bound assertions and persistent receipts. Unlock alone never confirms a
+memory claim. That additive API reaches schema 11; the rollout notes below
+describe the existing unlock ceremonies.
+
 This feature adds an optional browser decryption factor for an already signed-in
 account. It does not replace login or the saved superpassword/recovery code. The
 Server verifies WebAuthn; only the trusted Dashboard unwraps the existing
